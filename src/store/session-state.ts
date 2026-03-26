@@ -113,6 +113,70 @@ export class SessionStateStore {
 
   constructor(private db: DatabaseSync) {}
 
+  // ── Skill Awareness Tracking (in-memory) ─────
+  // Tracks whether agent accessed any skill files and detects repetitive patterns
+  // that suggest a new skill should be created.
+  private _skillFilesAccessed = new Map<string, Set<string>>();
+  private _operationSequences = new Map<string, string[]>();
+  private static readonly MAX_SEQUENCE_LENGTH = 50;
+
+  /** Record when agent reads a skill file (detected by path pattern). */
+  recordSkillAccess(sessionKey: string, skillPath: string): void {
+    if (!this._skillFilesAccessed.has(sessionKey)) {
+      this._skillFilesAccessed.set(sessionKey, new Set());
+    }
+    this._skillFilesAccessed.get(sessionKey)!.add(skillPath);
+  }
+
+  /** Track operation type for pattern detection. */
+  recordOperationType(sessionKey: string, opType: string): void {
+    if (!this._operationSequences.has(sessionKey)) {
+      this._operationSequences.set(sessionKey, []);
+    }
+    const seq = this._operationSequences.get(sessionKey)!;
+    seq.push(opType);
+    if (seq.length > SessionStateStore.MAX_SEQUENCE_LENGTH) {
+      seq.shift();
+    }
+  }
+
+  /** Check if any skill files were accessed this session. */
+  hasSkillAccess(sessionKey: string): boolean {
+    const accessed = this._skillFilesAccessed.get(sessionKey);
+    return !!accessed && accessed.size > 0;
+  }
+
+  /** Get skill files accessed this session. */
+  getSkillFilesAccessed(sessionKey: string): string[] {
+    const accessed = this._skillFilesAccessed.get(sessionKey);
+    return accessed ? Array.from(accessed) : [];
+  }
+
+  /** Detect repetitive operation sequences that suggest a skill opportunity.
+   *  Returns patterns that appear 3+ times (e.g., "read→edit→test" repeated). */
+  detectRepetitivePatterns(sessionKey: string): Array<{ pattern: string; count: number }> {
+    const seq = this._operationSequences.get(sessionKey);
+    if (!seq || seq.length < 6) return [];
+
+    const results: Array<{ pattern: string; count: number }> = [];
+    // Check 2-step and 3-step sequences
+    for (const windowSize of [2, 3]) {
+      const patternCounts = new Map<string, number>();
+      for (let i = 0; i <= seq.length - windowSize; i++) {
+        const pattern = seq.slice(i, i + windowSize).join("→");
+        patternCounts.set(pattern, (patternCounts.get(pattern) ?? 0) + 1);
+      }
+      for (const [pattern, count] of patternCounts) {
+        if (count >= 3) {
+          results.push({ pattern, count });
+        }
+      }
+    }
+
+    // Sort by count descending, deduplicate overlapping patterns
+    return results.sort((a, b) => b.count - a.count).slice(0, 3);
+  }
+
   // ── Quality Review Tracking (in-memory) ─────
   // Timestamp-based: review is valid until ANY file modification happens after it.
   // addModifiedFile() invalidates by setting _lastModificationTs > _qualityReviewTs.
@@ -265,6 +329,8 @@ export class SessionStateStore {
     this._recentCalls.delete(sessionKey);
     this._qualityReviewTs.delete(sessionKey);
     this._lastModificationTs.delete(sessionKey);
+    this._skillFilesAccessed.delete(sessionKey);
+    this._operationSequences.delete(sessionKey);
   }
 
   setWorkflowType(sessionKey: string, workflowType: string): void {

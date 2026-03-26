@@ -80,25 +80,29 @@ const WORKFLOW_GUIDANCE: Record<WorkflowType, string> = {
 1. debug_tracker KULLAN — start → reproduce → hypothesize → test → resolve
 2. FIX ÖNCE KÖK NEDENİ BUL — hata mesajını oku, reproduce et
 3. TEK hipotez, TEK minimal test. Hipotez olmadan fix DENEME
-4. 3 başarısız deneme = debug_tracker escalate → kullanıcıya danış`,
+4. 3 başarısız deneme = debug_tracker escalate → kullanıcıya danış
+💡 Bu hata tipi için workspace'inde bir debugging skill'i olabilir — kontrol et`,
 
   creating: `🏗️ **OLUŞTURMA MODU**
 1. ÖNCE plan_mode ile plan oluştur — plan olmadan kod yazma
 2. Kullanıcı onayı al, sonra adım adım uygula
 3. Her adımda task_tracker güncelle
-4. Bitirirken: test çalıştır, ilişkili dosyaları güncelle`,
+4. Bitirirken: test çalıştır, ilişkili dosyaları güncelle
+💡 Bu oluşturma görevi için hazır bir skill/şablon olabilir — workspace skill'lerini kontrol et`,
 
   analyzing: `📊 **ANALİZ MODU**
 1. Veri topla — ilgili dosyaları oku, mevcut durumu anla
 2. Bulguları sentezle, pattern'leri tespit et
 3. Varsayımlarını sorgula
-4. Yapılandırılmış çıktı oluştur`,
+4. Yapılandırılmış çıktı oluştur
+💡 Analiz tipi için özelleşmiş bir skill olabilir — kontrol et`,
 
   fixing: `🔧 **DÜZELTME MODU**
 1. ÖNCE dosyayı oku — okumadan düzenleme yapma
 2. Neyi neden değiştirdiğini planla
 3. Değişikliği uygula
-4. İlişkili dosyaları güncelle (STATE.md, MEMORY.md)`,
+4. İlişkili dosyaları güncelle (STATE.md, MEMORY.md)
+💡 Bu düzeltme tipi için bir skill/checklist olabilir — kontrol et`,
 
   general: "",  // No guidance for general — keep it clean
 };
@@ -116,6 +120,11 @@ ZORUNLU KURALLAR:
 - Dosya değişikliği yaptıysan STATE.md/MEMORY.md GÜNCELLE
 - "Tamamlandı" demeden ÖNCE doğrulama komutu çalıştır
 - İŞ BİTMEDEN ÖNCE quality_checklist(action: "review") ÇAĞIR — doğrulama, edge case, regresyon, gap analizi yanıtla
+
+SKILL FARKINDALIK:
+- Bir iş tipine başlarken workspace'teki mevcut skill'leri kontrol et
+- Tekrarlayan iş akışları tespit edersen → kullanıcıya skill oluşturulmasını öner
+- Skill önerisinde somut ol: hangi adımlar otomatikleşir, hangi tutarlılık sağlanır
 `;
 
 // ─── Build Context Function ──────────────────────────────────
@@ -324,7 +333,31 @@ function buildPeriodicWarnings(store: SessionStateStore, sessionKey: string): st
     );
   }
 
-  // Warning 8: Quality review reminder — escalates as session progresses
+  // Warning 8: Skill usage nudge — remind if no skill accessed in a non-trivial session
+  if (toolCallHistory && toolCallHistory.length >= 12 && !store.hasSkillAccess(sessionKey)) {
+    const workflow = snapshot.workflowType ?? "general";
+    if (workflow !== "general") {
+      warnings.push(
+        `- 💡 **Skill kontrolü** — ${toolCallHistory.length} tool call yapıldı ama bu session'da hiç skill dosyası kullanılmadı. ` +
+        `Bu "${workflow}" tipi iş için workspace'inde uygun bir skill olabilir. ` +
+        `Mevcut skill'leri kontrol et veya bu iş akışı için bir skill oluşturulmasını öner.`
+      );
+    }
+  }
+
+  // Warning 9: Repetitive pattern detection — suggest skill creation
+  if (toolCallHistory && toolCallHistory.length >= 15) {
+    const patterns = store.detectRepetitivePatterns(sessionKey);
+    if (patterns.length > 0) {
+      const topPattern = patterns[0];
+      warnings.push(
+        `- 🔄 **Tekrarlayan pattern tespit edildi** — "${topPattern.pattern}" dizisi ${topPattern.count}x tekrarlandı. ` +
+        `Bu iş akışı için bir skill oluşturulabilir — tekrarlayan adımları otomatikleştirir ve tutarlılık sağlar.`
+      );
+    }
+  }
+
+  // Warning 10: Quality review reminder — escalates as session progresses
   if (snapshot.modifiedFiles.length > 0 && !store.hasQualityReview(sessionKey)) {
     const fileCount = snapshot.modifiedFiles.length;
     const callCount = toolCallHistory?.length ?? 0;

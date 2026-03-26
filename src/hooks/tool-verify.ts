@@ -53,6 +53,13 @@ const MEMORY_FILE_PATTERNS = [
   /\/temp\//i,
 ];
 
+// Skill file patterns — detect when agent reads/uses a skill file
+const SKILL_FILE_PATTERNS = [
+  /\/skills\//i,
+  /\.skill\.md$/i,
+  /skill[-_]?[\w]+\.md$/i,
+];
+
 export function isFileReadTool(toolName: string): boolean {
   return FILE_READ_TOOLS.has(toolName);
 }
@@ -63,6 +70,27 @@ export function isFileWriteTool(toolName: string): boolean {
 
 function isMemoryFile(filePath: string): boolean {
   return MEMORY_FILE_PATTERNS.some(pattern => pattern.test(filePath));
+}
+
+function isSkillFile(filePath: string): boolean {
+  return SKILL_FILE_PATTERNS.some(pattern => pattern.test(filePath));
+}
+
+/** Classify a tool call into a high-level operation type for pattern detection. */
+function classifyOperation(toolName: string, params: Record<string, unknown>): string {
+  if (isFileReadTool(toolName)) return "read";
+  if (isFileWriteTool(toolName)) return "edit";
+  if (isShellTool(toolName)) {
+    const cmd = extractCommand(params);
+    if (cmd && isVerificationCommand(cmd)) return "verify";
+    return "shell";
+  }
+  // Plugin tools
+  if (toolName === "task_tracker") return "task";
+  if (toolName === "plan_mode") return "plan";
+  if (toolName === "debug_tracker") return "debug";
+  if (toolName === "quality_checklist") return "quality";
+  return "other";
 }
 
 function extractCommand(params: Record<string, unknown>): string | null {
@@ -153,7 +181,15 @@ export function handleAfterToolCall(deps: {
       // Track file reads
       if (isFileReadTool(event.toolName) && filePath && !event.error) {
         deps.store.addReadFile(sessionKey, filePath, event.toolName);
+
+        // Detect skill file access
+        if (isSkillFile(filePath)) {
+          deps.store.recordSkillAccess(sessionKey, filePath);
+        }
       }
+
+      // Track operation type for repetitive pattern detection
+      deps.store.recordOperationType(sessionKey, classifyOperation(event.toolName, event.params));
 
       // Track file writes/edits
       if (isFileWriteTool(event.toolName) && filePath && !event.error) {

@@ -137,6 +137,35 @@ export function handleAgentEnd(deps: {
         });
       }
 
+      // ── CHECK 6: Skill awareness ──────────────────
+
+      const toolCalls = deps.store.getRecentToolCalls(sessionKey);
+      const callCount = toolCalls?.length ?? 0;
+
+      // 6a: No skill used in a substantial session with a detected workflow
+      if (callCount >= 10 && !deps.store.hasSkillAccess(sessionKey) && snapshot.workflowType && snapshot.workflowType !== "general") {
+        issues.push({
+          type: "no_skill_used",
+          message: `"${snapshot.workflowType}" tipinde ${callCount} tool call yapıldı ama hiç skill kullanılmadı. ` +
+            `Bu iş tipi için uygun bir skill olup olmadığını kontrol et.`,
+          severity: "low",
+        });
+      }
+
+      // 6b: Repetitive pattern → skill creation suggestion
+      const repetitivePatterns = deps.store.detectRepetitivePatterns(sessionKey);
+      if (repetitivePatterns.length > 0) {
+        const suggestions = repetitivePatterns
+          .map(p => `"${p.pattern}" (${p.count}x)`)
+          .join(", ");
+        issues.push({
+          type: "skill_opportunity",
+          message: `Tekrarlayan iş akışı tespit edildi: ${suggestions}. ` +
+            `Bu pattern için bir skill oluşturulması önerilir — tutarlılığı artırır ve zaman kazandırır.`,
+          severity: "low",
+        });
+      }
+
       // ── Record result ──────────────────────────────
 
       if (issues.length === 0) {
