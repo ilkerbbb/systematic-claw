@@ -48,7 +48,7 @@ Layer 3 (AUDIT)    → File tracking, completion checks, quality reviews
 ```bash
 # Clone to OpenClaw extensions directory
 cd ~/.openclaw/extensions
-git clone https://github.com/ilkerbasaran/systematic-claw.git
+git clone https://github.com/ilkerbbb/systematic-claw.git
 cd systematic-claw
 npm install
 ```
@@ -57,20 +57,23 @@ Then add to your `openclaw.json`:
 
 ```json
 {
-  "extensions": ["~/.openclaw/extensions/systematic-claw"]
+  "plugins": {
+    "allow": ["systematic-claw"],
+    "entries": {
+      "systematic-claw": {
+        "enabled": true
+      }
+    }
+  }
 }
 ```
 
-**Important:** Add `"group:plugins"` to your agent's tool allowlist so plugin tools are visible:
+**Important:** Add `"group:plugins"` to your tool allowlist so plugin tools are visible:
 
 ```json
 {
-  "agents": {
-    "list": [{
-      "tools": {
-        "alsoAllow": ["group:plugins"]
-      }
-    }]
+  "tools": {
+    "alsoAllow": ["group:plugins"]
   }
 }
 ```
@@ -81,21 +84,25 @@ All settings have sensible defaults — the plugin works out of the box with zer
 
 ```json
 {
-  "extensions": {
-    "systematic-claw": {
-      "enabled": true,
-      "gateMode": "block",
-      "taskTrackerEnabled": true,
-      "planModeEnabled": true,
-      "completionCheckEnabled": true,
-      "memoryEnforcementEnabled": true,
-      "debugTrackerEnabled": true,
-      "workflowDetectionEnabled": true,
-      "propagationEnabled": true,
-      "dangerousCommands": [],
-      "bootstrapSizeWarnKB": 28,
-      "bootstrapSizeBlockKB": 35,
-      "dependencyMapPath": null
+  "plugins": {
+    "entries": {
+      "systematic-claw": {
+        "enabled": true,
+        "config": {
+          "gateMode": "block",
+          "taskTrackerEnabled": true,
+          "planModeEnabled": true,
+          "completionCheckEnabled": true,
+          "memoryEnforcementEnabled": true,
+          "debugTrackerEnabled": true,
+          "workflowDetectionEnabled": true,
+          "propagationEnabled": true,
+          "dangerousCommands": [],
+          "bootstrapSizeWarnKB": 28,
+          "bootstrapSizeBlockKB": 35,
+          "dependencyMapPath": null
+        }
+      }
     }
   }
 }
@@ -221,13 +228,15 @@ src/
 
 ## Dashboard
 
-Run the `/systematic` command in any OpenClaw session to see plugin stats:
+The plugin registers a `/systematic` slash command that shows plugin status:
 
 ```
 /systematic
 ```
 
-Shows: gate mode, feature toggles, 24h/7d statistics (completed sessions, blocked calls, warnings, errors).
+Shows: gate mode, feature toggles, 24h/7d audit statistics (completed sessions, blocked calls, warnings, errors).
+
+> **Note:** Command availability depends on your OpenClaw version and channel. If the command isn't available, check plugin status via the `quality_checklist(action: "status")` tool instead.
 
 ## Development
 
