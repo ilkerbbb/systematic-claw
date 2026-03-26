@@ -1,0 +1,95 @@
+{
+  "id": "systematic-claw",
+  "postInstallHint": "⚠️ Plugin tool'larının çalışması için agent config'da tools.alsoAllow'a \"group:plugins\" ekleyin veya tek tek \"task_tracker\", \"plan_mode\", \"debug_tracker\" yazın. Hook'lar (gate'ler) bu ayar olmadan da çalışır.",
+  "uiHints": {
+    "enabled": {
+      "label": "Enabled",
+      "help": "Enable or disable the Systematic Engine plugin"
+    },
+    "gateMode": {
+      "label": "Gate Mode",
+      "help": "How hard gates behave: 'warn' logs warnings, 'block' actively prevents tool calls"
+    },
+    "taskTrackerEnabled": {
+      "label": "Task Tracker",
+      "help": "Enable hierarchical task tracking tool for agents"
+    },
+    "planModeEnabled": {
+      "label": "Plan Mode",
+      "help": "Enable plan-before-execute workflow enforcement"
+    },
+    "completionCheckEnabled": {
+      "label": "Completion Check",
+      "help": "Enable end-of-session completion checklist verification"
+    },
+    "memoryEnforcementEnabled": {
+      "label": "Memory Enforcement",
+      "help": "Warn when sessions end without writing to workspace memory files"
+    },
+    "debugTrackerEnabled": {
+      "label": "Debug Tracker",
+      "help": "Enable systematic 4-phase debugging protocol (evidence → hypothesize → test → resolve)"
+    },
+    "dbPath": {
+      "label": "Database Path",
+      "help": "Path to SQLite database for session state and audit logs"
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": {
+        "type": "boolean"
+      },
+      "gateMode": {
+        "type": "string",
+        "enum": ["warn", "block"],
+        "default": "block"
+      },
+      "taskTrackerEnabled": {
+        "type": "boolean"
+      },
+      "planModeEnabled": {
+        "type": "boolean"
+      },
+      "completionCheckEnabled": {
+        "type": "boolean"
+      },
+      "memoryEnforcementEnabled": {
+        "type": "boolean"
+      },
+      "debugTrackerEnabled": {
+        "type": "boolean"
+      },
+      "workflowDetectionEnabled": {
+        "type": "boolean"
+      },
+      "dbPath": {
+        "type": "string"
+      },
+      "dangerousCommands": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Regex patterns for irreversible commands to hard-block (e.g., social media posts, destructive ops)"
+      },
+      "bootstrapSizeWarnKB": {
+        "type": "number",
+        "default": 28,
+        "description": "Warn when bootstrap file exceeds this size (KB)"
+      },
+      "bootstrapSizeBlockKB": {
+        "type": "number",
+        "default": 35,
+        "description": "Block when bootstrap file exceeds this size (KB)"
+      },
+      "propagationEnabled": {
+        "type": "boolean"
+      },
+      "dependencyMapPath": {
+        "type": "string",
+        "description": "Path to dependency map JSON for propagation checking"
+      }
+    }
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "name": "@systematic-claw/systematic-claw",
+  "version": "0.1.0",
+  "description": "Systematic thinking enforcement plugin for OpenClaw — brings Claude Code's structured methodology to any OpenClaw agent",
+  "type": "module",
+  "main": "index.ts",
+  "license": "MIT",
+  "keywords": [
+    "openclaw",
+    "openclaw-plugin",
+    "systematic",
+    "task-tracking",
+    "plan-mode",
+    "workflow-enforcement"
+  ],
+  "files": [
+    "index.ts",
+    "src/**/*.ts",
+    "openclaw.plugin.json",
+    "docs/",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "@sinclair/typebox": "0.34.48"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  },
+  "peerDependencies": {
+    "openclaw": "*"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}
