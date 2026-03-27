@@ -146,14 +146,33 @@ export function createQualityChecklistTool(deps: {
             details: { gate: "quality_checklist", score, maxScore, answers },
           });
 
+          // ── SUBAGENT REVIEW SUGGESTION ──────────────
+          // For high-complexity sessions, suggest dispatching a review subagent.
+          // This is prompt-based (Layer 1) — the agent decides whether to dispatch.
+          // Future: native runtime.subagent.run() integration (Layer 2).
+          const snapshot = deps.store.getSnapshot(sessionKey);
+          const modifiedFiles = snapshot?.modifiedFiles ?? [];
+          const directories = new Set(modifiedFiles.map(f => f.split("/").slice(0, -1).join("/")));
+          const isHighComplexity = modifiedFiles.length >= 6 || directories.size >= 3;
+
+          const subagentSuggestion = isHighComplexity ? {
+            subagentReview: {
+              suggested: true,
+              reason: `${modifiedFiles.length} dosya, ${directories.size} dizin — bağımsız review önerilir`,
+              readyPrompt: `Aşağıdaki dosyaları incele ve olası sorunları listele:\n${modifiedFiles.map(f => `- ${f}`).join("\n")}\n\nKontrol et:\n1. Değişiklikler birbiriyle tutarlı mı?\n2. Kırılma riski var mı? (API uyumluluğu, type safety)\n3. Eksik test/doğrulama var mı?\n4. Edge case'ler düşünülmüş mü?`,
+              hint: "Bu prompt'u sessions_spawn() ile bağımsız bir review agentına gönderebilirsin.",
+            },
+          } : {};
+
           return jsonResult({
             success: true,
             score: `${score}/${maxScore}`,
-            message: `✅ Quality review tamamlandı. Session tamamlanmaya hazır.`,
+            message: `✅ Quality review tamamlandı.${isHighComplexity ? " 📋 Yüksek karmaşıklık — bağımsız review subagent önerisi eklendi." : " Session tamamlanmaya hazır."}`,
             summary: REVIEW_FIELDS.map(f => {
               const val = answers[f.key];
               return `${f.emoji} ${f.label}: ${val ? val.slice(0, 80) + (val.length > 80 ? "..." : "") : "—"}`;
             }),
+            ...subagentSuggestion,
           });
         }
 

@@ -35,13 +35,19 @@ const SHELL_TOOLS = new Set([
 const VERIFICATION_PATTERNS = [
   /\b(npm|npx|yarn|pnpm)\s+(test|run\s+test|run\s+lint|run\s+build|run\s+check|run\s+typecheck)\b/i,
   /\b(pytest|py\.test|python\s+-m\s+(pytest|unittest))\b/i,
-  /\bgo\s+test\b/i,
-  /\bcargo\s+(test|check|clippy)\b/i,
+  /\bgo\s+(test|vet|build)\b/i,
+  /\bcargo\s+(test|check|clippy|build)\b/i,
   /\bmake\s+(test|check|build|lint|verify)\b/i,
   /\b(jest|vitest|mocha|tap|ava)\b/i,
-  /\b(eslint|tsc|mypy|flake8|ruff|pylint|rubocop)\b/i,
+  /\b(eslint|tsc|mypy|flake8|ruff|pylint|rubocop|biome|oxlint)\b/i,
   /\btsc\s+--noEmit\b/i,
-  /\b(swift\s+test|dotnet\s+test|mvn\s+test|gradle\s+test)\b/i,
+  /\b(swift\s+test|dotnet\s+(test|build)|mvn\s+(test|verify)|gradle\s+(test|build|check))\b/i,
+  // Node.js syntax check
+  /\bnode\s+--check\b/i,
+  // Explicit npx/yarn typecheck/build commands
+  /\b(npx|yarn|pnpm)\s+tsc\b/i,
+  // Python type checkers not already covered
+  /\bpyright\b/i,
 ];
 
 const MEMORY_FILE_PATTERNS = [
@@ -176,6 +182,16 @@ export function handleAfterToolCall(deps: {
 
     try {
       deps.store.ensureSession(sessionKey, deps.agentId);
+
+      // If this tool call was blocked by before_tool_call (gate), skip all file tracking.
+      // OpenClaw may fire after_tool_call for blocked calls without setting event.error,
+      // which would cause addModifiedFile → invalidateVerification → counter inflation.
+      if (deps.store.consumeGateBlock(sessionKey)) {
+        // Only record the tool call for doom loop detection (as errored/blocked)
+        deps.store.recordToolCall(sessionKey, event.toolName, event.params, true);
+        return;
+      }
+
       const filePath = extractFilePath(event.params);
 
       // Track file reads
@@ -194,9 +210,19 @@ export function handleAfterToolCall(deps: {
       // Track file writes/edits
       if (isFileWriteTool(event.toolName) && filePath && !event.error) {
         deps.store.addModifiedFile(sessionKey, filePath, event.toolName);
+        // Note: addModifiedFile() already calls invalidateVerification() internally —
+        // no need to call it again here (was causing double-increment of writesSinceVerification)
 
-        // Invalidate verification — new modifications after last test run require re-verification
-        deps.store.invalidateVerification(sessionKey);
+        // Implicit read: When a file is CREATED (Write/write_file/create_file — NOT Edit),
+        // the agent defined the content itself, so it implicitly "knows" the file.
+        // Record as read to prevent false Gate 1 blocks on subsequent edits to agent-created files.
+        const FILE_CREATE_TOOLS = new Set([
+          "file_write", "write_file", "Write", "write",
+          "file_create", "create_file",
+        ]);
+        if (FILE_CREATE_TOOLS.has(event.toolName)) {
+          deps.store.addReadFile(sessionKey, filePath, `${event.toolName}:implicit`);
+        }
 
         // Detect memory file writes
         if (isMemoryFile(filePath)) {
@@ -217,7 +243,7 @@ export function handleAfterToolCall(deps: {
           const shellWrittenFiles = detectShellFileWrites(command);
           for (const writtenFile of shellWrittenFiles) {
             deps.store.addModifiedFile(sessionKey, writtenFile, `${event.toolName}:shell_write`);
-            deps.store.invalidateVerification(sessionKey);
+            // addModifiedFile() calls invalidateVerification() internally — no redundant call needed
 
             if (isMemoryFile(writtenFile)) {
               deps.store.setMemoryWritten(sessionKey);

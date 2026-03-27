@@ -10,14 +10,18 @@
  */
 import type { SessionStateStore } from "../store/session-state.js";
 import type { AuditLog } from "../store/audit-log.js";
-import { renderTaskTree, renderPlan, RELATED_FILE_RULES } from "../tools/common.js";
+import { renderTaskTree, renderPlan, RELATED_FILE_RULES, isExcludedFromRelatedFileRules } from "../tools/common.js";
 
 // Cache cross-session summary per session (never changes during a session, avoid 6 SQL queries per prompt)
 const lastSessionSummaryCache = new Map<string, string | null>();
 
+// Process boot timestamp — used to distinguish "new session" vs "gateway restart mid-session"
+const PROCESS_BOOT_TIME = new Date().toISOString().replace("T", " ").replace("Z", "").slice(0, 19);
+
 // Track which sessions have been initialized this process lifetime.
 // On first buildPromptContext call for a session, we reset tracking
-// because session_start event doesn't fire reliably in OpenClaw.
+// ONLY IF the session data is stale (updated_at < process boot time).
+// If session data is fresh (gateway restarted mid-session), preserve it.
 const initializedSessions = new Set<string>();
 
 // ─── Workflow Detection ──────────────────────────────────────
@@ -85,9 +89,12 @@ const WORKFLOW_GUIDANCE: Record<WorkflowType, string> = {
 
   creating: `🏗️ **OLUŞTURMA MODU**
 1. ÖNCE plan_mode ile plan oluştur — plan olmadan kod yazma
+   → 4+ adım: 4-Lens Brainstorm zorunlu (constraints, impact, reversibility, success_criteria)
+   → Alternatifler: en az 2 farklı yaklaşım + trade-off analizi
 2. Kullanıcı onayı al, sonra adım adım uygula
 3. Her adımda task_tracker güncelle
 4. Bitirirken: test çalıştır, ilişkili dosyaları güncelle
+💡 Verify-First: her 3-4 dosya yazımından sonra test/build çalıştır — hataları erken yakala
 💡 Bu oluşturma görevi için hazır bir skill/şablon olabilir — workspace skill'lerini kontrol et`,
 
   analyzing: `📊 **ANALİZ MODU**
@@ -99,7 +106,7 @@ const WORKFLOW_GUIDANCE: Record<WorkflowType, string> = {
 
   fixing: `🔧 **DÜZELTME MODU**
 1. ÖNCE dosyayı oku — okumadan düzenleme yapma
-2. Neyi neden değiştirdiğini planla
+2. Neyi neden değiştirdiğini planla (karmaşıksa plan_mode + 4-Lens Brainstorm kullan)
 3. Değişikliği uygula
 4. İlişkili dosyaları güncelle (STATE.md, MEMORY.md)
 💡 Bu düzeltme tipi için bir skill/checklist olabilir — kontrol et`,
@@ -142,13 +149,23 @@ export function buildPromptContext(params: {
   // ── First-call session reset ──────────────────────────────────
   // session_start event doesn't fire reliably in OpenClaw, so we
   // use the first before_prompt_build call as the session init point.
-  // This clears stale modifiedFiles, read_files, etc. from previous sessions.
+  //
+  // SMART RESET: Only reset if session data is STALE (from a previous session).
+  // If session data is FRESH (updated after process boot), this is a gateway
+  // restart mid-session — preserve the data to avoid losing tracking state.
   if (!initializedSessions.has(sessionKey)) {
     initializedSessions.add(sessionKey);
     try {
-      params.sessionStore.resetSessionTracking(sessionKey);
-      // Also clear the cross-session summary cache so it re-fetches
-      lastSessionSummaryCache.delete(sessionKey);
+      const sessionUpdatedAt = params.sessionStore.getSessionUpdatedAt(sessionKey);
+      const isStaleSession = !sessionUpdatedAt || sessionUpdatedAt < PROCESS_BOOT_TIME;
+
+      if (isStaleSession) {
+        params.sessionStore.resetSessionTracking(sessionKey);
+        // Also clear the cross-session summary cache so it re-fetches
+        lastSessionSummaryCache.delete(sessionKey);
+      }
+      // If session is fresh (updated after process boot), skip reset —
+      // this is a gateway restart mid-session, preserve tracking data.
     } catch (err) {
       console.warn("[systematic-claw] session reset error:", err instanceof Error ? err.message : err);
     }
@@ -169,21 +186,67 @@ export function buildPromptContext(params: {
     }
   }
 
-  // 1. Workflow detection and guidance
+  // 1. Workflow detection and guidance (State Machine)
+  //    Re-detect on every user prompt. Track transitions. Warn on incomplete workflow switches.
   if (params.workflowDetectionEnabled) {
-    const workflow = detectWorkflow(params.prompt);
-    const guidance = WORKFLOW_GUIDANCE[workflow];
+    const newWorkflow = detectWorkflow(params.prompt);
+    const guidance = WORKFLOW_GUIDANCE[newWorkflow];
     if (guidance) {
       parts.push(guidance);
     }
 
-    // Store workflow type — only on first detection (don't overwrite mid-session)
     if (params.sessionKey) {
       try {
         const snapshot = params.sessionStore.getSnapshot(params.sessionKey);
-        if (!snapshot?.workflowType) {
-          params.sessionStore.setWorkflowType(params.sessionKey, workflow);
+        const previousWorkflow = snapshot?.workflowType as WorkflowType | undefined;
+
+        // Detect meaningful workflow transition (ignore general → X and X → general)
+        const isTransition = previousWorkflow
+          && previousWorkflow !== newWorkflow
+          && previousWorkflow !== "general"
+          && newWorkflow !== "general";
+
+        if (isTransition && snapshot) {
+          // Check if previous workflow had incomplete work
+          const tasks = snapshot.tasks ?? [];
+          const hasIncompleteTasks = tasks.some(
+            t => t.status === "in_progress" || (t.status === "pending" && tasks.length > 1)
+          );
+          const activePlan = snapshot.activePlan;
+          const hasIncompletePlan = activePlan
+            && activePlan.phase !== "completed"
+            && activePlan.phase !== "cancelled";
+
+          if (hasIncompleteTasks || hasIncompletePlan) {
+            parts.push(
+              `⚠️ **WORKFLOW DEĞİŞİKLİĞİ** — "${previousWorkflow}" → "${newWorkflow}" geçişi tespit edildi.\n` +
+              `Önceki iş tamamlanmamış görünüyor:` +
+              (hasIncompletePlan && activePlan ? ` Plan "${activePlan.goal}" henüz ${activePlan.phase} aşamasında.` : "") +
+              (hasIncompleteTasks ? ` Tamamlanmamış görevler var.` : "") +
+              `\nÖnceki işi tamamla veya iptal et, sonra yeni işe geç.`
+            );
+          }
+
+          // Audit log the transition
+          if (params.auditLog) {
+            params.auditLog.record({
+              sessionKey,
+              eventType: "gate_warned",
+              severity: hasIncompleteTasks || hasIncompletePlan ? "medium" : "info",
+              message: `Workflow transition: ${previousWorkflow} → ${newWorkflow}`,
+              details: {
+                gate: "workflow_transition",
+                from: previousWorkflow,
+                to: newWorkflow,
+                hasIncompleteTasks,
+                hasIncompletePlan: !!hasIncompletePlan,
+              },
+            });
+          }
         }
+
+        // Always update workflow type (re-detect per prompt)
+        params.sessionStore.setWorkflowType(params.sessionKey, newWorkflow);
       } catch (err) {
         console.warn("[systematic-claw] prompt-inject error:", err instanceof Error ? err.message : err);
       }
@@ -249,8 +312,7 @@ function buildPeriodicWarnings(store: SessionStateStore, sessionKey: string): st
 
   // Warning 1: Files modified but related files not updated
   // Filter out temp/scratch paths — they don't need STATE.md updates
-  const EXEMPT_PATHS = /^\/(tmp|var|private\/tmp)\//i;
-  const relevantModifiedFiles = snapshot.modifiedFiles.filter(f => !EXEMPT_PATHS.test(f));
+  const relevantModifiedFiles = snapshot.modifiedFiles.filter(f => !isExcludedFromRelatedFileRules(f));
   if (relevantModifiedFiles.length > 0) {
     const checkedRequired = new Set<string>();
     for (const modifiedFile of relevantModifiedFiles) {
@@ -295,9 +357,26 @@ function buildPeriodicWarnings(store: SessionStateStore, sessionKey: string): st
     }
   }
 
-  // Warning 5: Verification not run after modifications
+  // Warning 5: Verify-First (TDD Lite) — escalating nudge based on writes since verification
   if (snapshot.modifiedFiles.length > 0 && !store.hasRecentVerification(sessionKey)) {
-    warnings.push("- ❌ **Doğrulama çalıştırılmadı** — dosya değişikliği yapıldı ama test/build/lint komutu çalıştırılmadı");
+    const writesSinceVerify = store.getWritesSinceVerification(sessionKey);
+
+    if (writesSinceVerify >= 8) {
+      // Critical: too many writes without ANY verification
+      warnings.push(
+        `- 🛑 **DOĞRULAMA ACİL** — ${writesSinceVerify} dosya yazımı yapıldı, hiç test/build çalıştırılmadı. ` +
+        `Hataları erken yakala: şu an test çalıştır. Ne kadar çok değişiklik birikirse, debug o kadar zorlaşır.`
+      );
+    } else if (writesSinceVerify >= 4) {
+      // Moderate: suggest intermediate verification
+      warnings.push(
+        `- ⚠️ **Ara doğrulama önerilir** — ${writesSinceVerify} dosya yazımı yapıldı, henüz doğrulanmadı. ` +
+        `Verify-First: değişiklikleri küçük gruplar halinde doğrula, hataları erken yakala.`
+      );
+    } else if (writesSinceVerify >= 1) {
+      // Gentle: basic reminder
+      warnings.push("- ❌ **Doğrulama çalıştırılmadı** — dosya değişikliği yapıldı ama test/build/lint komutu çalıştırılmadı");
+    }
   }
 
   // Warning 6: Smart tool recommendation based on session patterns
@@ -357,21 +436,89 @@ function buildPeriodicWarnings(store: SessionStateStore, sessionKey: string): st
     }
   }
 
-  // Warning 10: Quality review reminder — escalates as session progresses
+  // Warning 10: Complexity-Based Quality Review Triggers
+  // Instead of simple call-count thresholds, use complexity signals:
+  // - Cross-directory changes (3+ directories)
+  // - Same-file revisions (file edited 3+ times = churn risk)
+  // - Config file changes (package.json, tsconfig, etc.)
+  // - Session duration (high call count)
   if (snapshot.modifiedFiles.length > 0 && !store.hasQualityReview(sessionKey)) {
     const fileCount = snapshot.modifiedFiles.length;
     const callCount = toolCallHistory?.length ?? 0;
 
-    if (callCount >= 25) {
-      // Strong reminder — session is nearing completion
+    // Calculate complexity score (0-10 scale)
+    let complexityScore = 0;
+    const complexityReasons: string[] = [];
+
+    // Signal 1: Cross-directory spread (3+ directories = higher complexity)
+    const directories = new Set(snapshot.modifiedFiles.map(f => {
+      const parts = f.split("/");
+      return parts.slice(0, -1).join("/");
+    }));
+    if (directories.size >= 4) {
+      complexityScore += 3;
+      complexityReasons.push(`${directories.size} farklı dizin`);
+    } else if (directories.size >= 3) {
+      complexityScore += 2;
+      complexityReasons.push(`${directories.size} farklı dizin`);
+    }
+
+    // Signal 2: Same-file revisions (churn — file edited multiple times)
+    if (toolCallHistory) {
+      const fileEditCounts = new Map<string, number>();
+      for (const call of toolCallHistory) {
+        if (call.fileTarget) {
+          fileEditCounts.set(call.fileTarget, (fileEditCounts.get(call.fileTarget) ?? 0) + 1);
+        }
+      }
+      const churningFiles = [...fileEditCounts.entries()].filter(([, count]) => count >= 3);
+      if (churningFiles.length > 0) {
+        complexityScore += 2;
+        complexityReasons.push(`${churningFiles.length} dosya 3+ kez düzenlendi`);
+      }
+    }
+
+    // Signal 3: Config file changes (higher risk of breaking things)
+    const CONFIG_PATTERNS = /\/(package\.json|tsconfig|\.eslintrc|\.env|Dockerfile|docker-compose|Makefile|\.github)/i;
+    const configChanges = snapshot.modifiedFiles.filter(f => CONFIG_PATTERNS.test(f));
+    if (configChanges.length > 0) {
+      complexityScore += 2;
+      complexityReasons.push(`${configChanges.length} config dosyası`);
+    }
+
+    // Signal 4: Session duration (tool call count as proxy)
+    if (callCount >= 30) {
+      complexityScore += 3;
+      complexityReasons.push(`${callCount} tool call`);
+    } else if (callCount >= 15) {
+      complexityScore += 1;
+    }
+
+    // Signal 5: Raw file count
+    if (fileCount >= 8) {
+      complexityScore += 2;
+      complexityReasons.push(`${fileCount} dosya değiştirildi`);
+    } else if (fileCount >= 4) {
+      complexityScore += 1;
+    }
+
+    // Emit warning based on complexity score
+    const reasonText = complexityReasons.length > 0 ? ` (${complexityReasons.join(", ")})` : "";
+
+    if (complexityScore >= 5) {
       warnings.push(
-        "- 🛑 **QUALITY REVIEW ZORUNLU** — " + fileCount + " dosya değiştirildi, " + callCount +
-        " tool call yapıldı ama quality_checklist henüz çağrılmadı. " +
-        "İşi tamamlamadan ÖNCE `quality_checklist(action: \"review\")` çağır. " +
-        "Doğrulama, edge case, regresyon riski ve gap analizi yanıtla."
+        `- 🛑 **QUALITY REVIEW ZORUNLU** — Yüksek karmaşıklık tespit edildi${reasonText}. ` +
+        `quality_checklist henüz çağrılmadı. ` +
+        `İşi tamamlamadan ÖNCE \`quality_checklist(action: "review")\` çağır. ` +
+        `Doğrulama, edge case, regresyon riski ve gap analizi yanıtla.`
+      );
+    } else if (complexityScore >= 3) {
+      warnings.push(
+        `- ⚠️ **Quality review hatırlatma** — Orta karmaşıklık${reasonText}. ` +
+        `İşi bitirmeden önce \`quality_checklist(action: "review")\` çağırmayı unutma.`
       );
     } else if (callCount >= 10) {
-      // Gentle reminder
+      // Fallback: even low-complexity sessions with 10+ calls get a gentle reminder
       warnings.push(
         "- ⚠️ **Quality review hatırlatma** — " + fileCount + " dosya değiştirildi. " +
         "İşi bitirmeden önce `quality_checklist(action: \"review\")` çağırmayı unutma."

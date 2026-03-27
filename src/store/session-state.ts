@@ -110,8 +110,71 @@ export class SessionStateStore {
   // In-memory tool call history for doom loop detection
   private _recentCalls = new Map<string, ToolCallRecord[]>();
   private static readonly MAX_CALL_HISTORY = 20;
+  // Maximum number of sessions to track in-memory before pruning oldest
+  private static readonly MAX_TRACKED_SESSIONS = 50;
+
+  // Gate block tracking: when before_tool_call blocks a call, after_tool_call
+  // should skip all file tracking (addModifiedFile etc.) to prevent counter inflation.
+  // Key: sessionKey, Value: number of pending blocked calls to skip
+  private _pendingGateBlocks = new Map<string, number>();
+
+  /** Mark that a gate block occurred — after_tool_call should skip tracking for this call. */
+  markGateBlocked(sessionKey: string): void {
+    this._pendingGateBlocks.set(sessionKey, (this._pendingGateBlocks.get(sessionKey) ?? 0) + 1);
+  }
+
+  /** Consume one gate block — returns true if the call should be skipped. */
+  consumeGateBlock(sessionKey: string): boolean {
+    const count = this._pendingGateBlocks.get(sessionKey) ?? 0;
+    if (count <= 0) return false;
+    if (count === 1) {
+      this._pendingGateBlocks.delete(sessionKey);
+    } else {
+      this._pendingGateBlocks.set(sessionKey, count - 1);
+    }
+    return true;
+  }
 
   constructor(private db: DatabaseSync) {}
+
+  /** Prune in-memory Maps if they exceed MAX_TRACKED_SESSIONS.
+   *  Called from resetSessionTracking to keep memory bounded.
+   *  Removes a random old entry — not LRU, but sufficient for preventing unbounded growth. */
+  private pruneInMemoryMaps(): void {
+    const limit = SessionStateStore.MAX_TRACKED_SESSIONS;
+    const maps: Map<string, unknown>[] = [
+      this._verifications,
+      this._recentCalls,
+      this._qualityReviewTs,
+      this._lastModificationTs,
+      this._skillFilesAccessed,
+      this._operationSequences,
+      this._writesSinceVerification,
+      this._pendingGateBlocks,
+    ];
+    for (const map of maps) {
+      if (map.size > limit) {
+        // Delete oldest entries (first inserted in Map iteration order)
+        const excess = map.size - limit;
+        let deleted = 0;
+        for (const key of map.keys()) {
+          if (deleted >= excess) break;
+          map.delete(key);
+          deleted++;
+        }
+      }
+    }
+    // Also prune brainstorm cache (keyed by planId, not sessionKey)
+    if (this._brainstormCache.size > limit) {
+      const excess = this._brainstormCache.size - limit;
+      let deleted = 0;
+      for (const key of this._brainstormCache.keys()) {
+        if (deleted >= excess) break;
+        this._brainstormCache.delete(key);
+        deleted++;
+      }
+    }
+  }
 
   // ── Skill Awareness Tracking (in-memory) ─────
   // Tracks whether agent accessed any skill files and detects repetitive patterns
@@ -119,6 +182,14 @@ export class SessionStateStore {
   private _skillFilesAccessed = new Map<string, Set<string>>();
   private _operationSequences = new Map<string, string[]>();
   private static readonly MAX_SEQUENCE_LENGTH = 50;
+
+  // In-memory brainstorm cache — stores success criteria for verify-time cross-check
+  private _brainstormCache = new Map<string, {
+    constraints: string[];
+    impactRadius: string[];
+    reversibility: string;
+    successCriteria: string[];
+  }>();
 
   /** Record when agent reads a skill file (detected by path pattern). */
   recordSkillAccess(sessionKey: string, skillPath: string): void {
@@ -177,6 +248,27 @@ export class SessionStateStore {
     return results.sort((a, b) => b.count - a.count).slice(0, 3);
   }
 
+  // ── Brainstorm Cache (in-memory) ──────────────
+  // Stores 4-Lens brainstorm data for cross-checking at plan verify time.
+
+  storeBrainstorm(planId: string, brainstorm: {
+    constraints: string[];
+    impactRadius: string[];
+    reversibility: string;
+    successCriteria: string[];
+  }): void {
+    this._brainstormCache.set(planId, brainstorm);
+  }
+
+  getBrainstorm(planId: string): {
+    constraints: string[];
+    impactRadius: string[];
+    reversibility: string;
+    successCriteria: string[];
+  } | undefined {
+    return this._brainstormCache.get(planId);
+  }
+
   // ── Quality Review Tracking (in-memory) ─────
   // Timestamp-based: review is valid until ANY file modification happens after it.
   // addModifiedFile() invalidates by setting _lastModificationTs > _qualityReviewTs.
@@ -201,20 +293,32 @@ export class SessionStateStore {
   }
 
   // ── Verification Tracking (in-memory) ─────
+  // Also tracks write-count-since-verification for TDD Lite nudges.
+  private _writesSinceVerification = new Map<string, number>();
 
   recordVerification(sessionKey: string): void {
     this._verifications.set(sessionKey, Date.now());
+    this._writesSinceVerification.set(sessionKey, 0); // Reset counter on verification
   }
 
   /** Invalidate verification when new files are modified after last verification. */
   invalidateVerification(sessionKey: string): void {
     this._verifications.delete(sessionKey);
+    this._writesSinceVerification.set(
+      sessionKey,
+      (this._writesSinceVerification.get(sessionKey) ?? 0) + 1
+    );
   }
 
   hasRecentVerification(sessionKey: string, withinMs: number = 300_000): boolean {
     const ts = this._verifications.get(sessionKey);
     if (!ts) return false;
     return (Date.now() - ts) < withinMs;
+  }
+
+  /** Number of file writes since last successful verification. Used for TDD Lite nudge escalation. */
+  getWritesSinceVerification(sessionKey: string): number {
+    return this._writesSinceVerification.get(sessionKey) ?? 0;
   }
 
   // ── Tool Call Tracking (doom loop detection) ─────
@@ -253,40 +357,51 @@ export class SessionStateStore {
 
     const contentSig = extractContentSignature(params);
 
-    // Count matching calls in last 10 recorded calls
+    // Count matching calls in last 10 recorded calls.
+    // IMPORTANT: Calls that had errors (including gate blocks) are excluded from
+    // doom loop counting for Tier 1 and Tier 3. Reason: when a gate blocks a write,
+    // the agent legitimately retries after fixing the gate condition (e.g., running
+    // verification). Counting blocked attempts as "repeats" causes false positives.
     const recentWindow = history.slice(-10);
     let exactRepeatCount = 0;
     let sameFileCount = 0;
+    let sameFileSuccessCount = 0;
     let sameFileErrorCount = 0;
     for (const call of recentWindow) {
       if (call.toolName === toolName && call.fileTarget === fileTarget) {
         sameFileCount++;
-        if (call.hadError) sameFileErrorCount++;
-        // If content signatures match (or both null for non-edit tools), it's an exact repeat
-        if (call.contentSig === contentSig) {
-          exactRepeatCount++;
+        if (call.hadError) {
+          sameFileErrorCount++;
+        } else {
+          sameFileSuccessCount++;
+          // If content signatures match (or both null for non-edit tools), it's an exact repeat
+          // Only count SUCCESSFUL calls — blocked calls with same content are gate retries, not doom loops
+          if (call.contentSig === contentSig) {
+            exactRepeatCount++;
+          }
         }
       }
     }
 
-    // +1 for the current call
+    // +1 for the current call (not yet recorded, assumed successful)
     exactRepeatCount += 1;
-    sameFileCount += 1;
+    sameFileSuccessCount += 1;
 
-    // TIER 1: 3+ exact repeats (same tool + same file + same content) = definite doom loop
+    // TIER 1: 3+ exact repeats (same tool + same file + same content, excluding errors) = definite doom loop
     if (exactRepeatCount >= 3) {
       return { detected: true, toolName, fileTarget, count: exactRepeatCount };
     }
 
-    // TIER 2: 4+ different edits to same file WITH errors in the mix = fix-retry loop
+    // TIER 2: 4+ different edits to same file WITH real errors (not gate blocks) in the mix = fix-retry loop
     // (agent is trying different fixes but they keep failing — classic doom loop)
-    if (sameFileCount >= 4 && sameFileErrorCount >= 1) {
+    // Note: sameFileCount includes errors here intentionally — the pattern IS error-driven
+    if (sameFileCount >= 4 && sameFileErrorCount >= 1 && sameFileSuccessCount >= 2) {
       return { detected: true, toolName, fileTarget, count: sameFileCount };
     }
 
-    // TIER 3: 6+ edits to same file regardless = too many attempts, even if all succeed
-    if (sameFileCount >= 6) {
-      return { detected: true, toolName, fileTarget, count: sameFileCount };
+    // TIER 3: 6+ SUCCESSFUL edits to same file = too many attempts, even if all succeed
+    if (sameFileSuccessCount >= 6) {
+      return { detected: true, toolName, fileTarget, count: sameFileSuccessCount };
     }
 
     return { detected: false };
@@ -317,6 +432,14 @@ export class SessionStateStore {
 
   /** Reset session-scoped tracking (file lists, workflow type) for a fresh session start.
    *  Preserves tasks and plans (cross-session), but clears per-session accumulation. */
+  /** Get the last updated_at timestamp for a session (SQLite datetime string or null). */
+  getSessionUpdatedAt(sessionKey: string): string | null {
+    const row = this.db.prepare(
+      "SELECT updated_at FROM session_state WHERE session_key = ?"
+    ).get(sessionKey) as { updated_at: string } | undefined;
+    return row?.updated_at ?? null;
+  }
+
   resetSessionTracking(sessionKey: string): void {
     this.db.prepare(`
       UPDATE session_state
@@ -331,6 +454,12 @@ export class SessionStateStore {
     this._lastModificationTs.delete(sessionKey);
     this._skillFilesAccessed.delete(sessionKey);
     this._operationSequences.delete(sessionKey);
+    this._writesSinceVerification.delete(sessionKey);
+    this._pendingGateBlocks.delete(sessionKey);
+    // Note: _brainstormCache is keyed by planId, not sessionKey — cleared when plan completes
+
+    // Prune all in-memory Maps to prevent unbounded growth across many sessions
+    this.pruneInMemoryMaps();
   }
 
   setWorkflowType(sessionKey: string, workflowType: string): void {

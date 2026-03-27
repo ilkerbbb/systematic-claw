@@ -8,7 +8,7 @@
 import { Type } from "@sinclair/typebox";
 import type { SessionStateStore, TaskStatus } from "../store/session-state.js";
 import type { AuditLog } from "../store/audit-log.js";
-import { jsonResult, generateId, renderTaskTree, RELATED_FILE_RULES, PROPAGATION_RULES, type AnyAgentTool } from "./common.js";
+import { jsonResult, generateId, renderTaskTree, RELATED_FILE_RULES, PROPAGATION_RULES, isExcludedFromRelatedFileRules, type AnyAgentTool } from "./common.js";
 import type { GateMode } from "../hooks/hard-gates.js";
 
 const TaskTrackerSchema = Type.Object({
@@ -138,17 +138,20 @@ export function createTaskTrackerTool(deps: {
             // by using update(status: "completed") instead of complete().
             const completingTasks = tasks.filter(t => t.status === "completed");
             const updateChainWarnings: string[] = [];
+            const updateCritical: string[] = [];
+            const updateAdvisory: string[] = [];
 
             if (completingTasks.length > 0) {
               const snapshot = deps.store.getSnapshot(sessionKey);
               if (snapshot && snapshot.modifiedFiles.length > 0) {
                 if (!deps.store.hasRecentVerification(sessionKey)) {
-                  updateChainWarnings.push(
-                    "❌ DOĞRULAMA EKSİK — Dosya değişikliği yapıldı ama test/build/lint çalıştırılmadı."
-                  );
+                  const msg = "❌ DOĞRULAMA EKSİK — Dosya değişikliği yapıldı ama test/build/lint çalıştırılmadı.";
+                  updateChainWarnings.push(msg);
+                  updateCritical.push(msg);
                 }
                 const missingRelated = new Set<string>();
                 for (const modFile of snapshot.modifiedFiles) {
+                  if (isExcludedFromRelatedFileRules(modFile)) continue;
                   for (const rule of RELATED_FILE_RULES) {
                     if (rule.pattern.test(modFile)) {
                       for (const required of rule.requires) {
@@ -163,25 +166,38 @@ export function createTaskTrackerTool(deps: {
                   }
                 }
                 if (missingRelated.size > 0) {
-                  updateChainWarnings.push(
-                    `⚠️ İLİŞKİLİ DOSYA EKSİK — Güncellenmedi: ${[...missingRelated].join(", ")}`
-                  );
+                  const msg = `⚠️ İLİŞKİLİ DOSYA EKSİK — Güncellenmedi: ${[...missingRelated].join(", ")}`;
+                  updateChainWarnings.push(msg);
+                  updateAdvisory.push(msg);
                 }
               }
 
               if (updateChainWarnings.length > 0) {
+                const hasCritical = updateCritical.length > 0;
+                const shouldBlock = hasCritical || gateMode === "block";
+
                 deps.auditLog.record({
                   sessionKey,
-                  eventType: gateMode === "block" ? "gate_blocked" : "gate_warned",
-                  severity: gateMode === "block" ? "high" : "medium",
-                  message: `Workflow chain gate: update-to-complete ${gateMode === "block" ? "blocked" : "warned"}`,
-                  details: { gate: "workflow_chain", taskIds: completingTasks.map(t => t.id), warnings: updateChainWarnings },
+                  eventType: shouldBlock ? "gate_blocked" : "gate_warned",
+                  severity: shouldBlock ? "high" : "medium",
+                  message: `Workflow chain gate: update-to-complete ${shouldBlock ? "blocked" : "warned"}`,
+                  details: {
+                    gate: "workflow_chain",
+                    taskIds: completingTasks.map(t => t.id),
+                    critical: updateCritical,
+                    advisory: updateAdvisory,
+                    gateMode,
+                    overriddenByCritical: hasCritical && gateMode === "warn",
+                  },
                 });
 
-                if (gateMode === "block") {
+                if (shouldBlock) {
                   return jsonResult({
                     error: "Görev(ler) tamamlanamıyor — workflow chain eksik",
                     warnings: updateChainWarnings,
+                    ...(hasCritical && gateMode === "warn" ? {
+                      note: "⛔ Doğrulama eksikliği kritik — gateMode: warn olsa bile engellendi.",
+                    } : {}),
                     hint: "Önce doğrulama komutu çalıştır ve ilişkili dosyaları güncelle.",
                   });
                 }
@@ -274,21 +290,28 @@ export function createTaskTrackerTool(deps: {
             // 1. Were files modified? If so, was verification (test/build) run?
             // 2. Were source files modified but STATE.md not updated?
             // These checks enforce the edit→verify→mark chain.
+            //
+            // Two severity levels:
+            // - chainCritical: ALWAYS block (verification missing) — cannot be bypassed even in warn mode
+            // - chainAdvisory: follow gateMode (related files, propagation)
             const chainWarnings: string[] = [];
+            const chainCritical: string[] = [];
+            const chainAdvisory: string[] = [];
             const snapshot = deps.store.getSnapshot(sessionKey);
 
             if (snapshot && snapshot.modifiedFiles.length > 0) {
-              // Check 1: Verification after file modifications
+              // Check 1: Verification after file modifications — CRITICAL (always blocks)
               if (!deps.store.hasRecentVerification(sessionKey)) {
-                chainWarnings.push(
-                  "❌ DOĞRULAMA EKSİK — Dosya değişikliği yapıldı ama test/build/lint komutu çalıştırılmadı. " +
-                  "Önce doğrulama komutu çalıştır, sonra görevi tamamla."
-                );
+                const msg = "❌ DOĞRULAMA EKSİK — Dosya değişikliği yapıldı ama test/build/lint komutu çalıştırılmadı. " +
+                  "Önce doğrulama komutu çalıştır, sonra görevi tamamla.";
+                chainWarnings.push(msg);
+                chainCritical.push(msg);
               }
 
               // Check 2: Related file updates (STATE.md etc.)
               const missingRelated = new Set<string>();
               for (const modFile of snapshot.modifiedFiles) {
+                if (isExcludedFromRelatedFileRules(modFile)) continue;
                 for (const rule of RELATED_FILE_RULES) {
                   if (rule.pattern.test(modFile)) {
                     for (const required of rule.requires) {
@@ -303,10 +326,10 @@ export function createTaskTrackerTool(deps: {
                 }
               }
               if (missingRelated.size > 0) {
-                chainWarnings.push(
-                  `⚠️ İLİŞKİLİ DOSYA EKSİK — Kaynak kodu değişti ama şunlar güncellenmedi: ${[...missingRelated].join(", ")}. ` +
-                  `Bu dosyaları güncellemeden görevi tamamlama.`
-                );
+                const msg = `⚠️ İLİŞKİLİ DOSYA EKSİK — Kaynak kodu değişti ama şunlar güncellenmedi: ${[...missingRelated].join(", ")}. ` +
+                  `Bu dosyaları güncellemeden görevi tamamlama.`;
+                chainWarnings.push(msg);
+                chainAdvisory.push(msg);
               }
 
               // Check 3: Propagation — source file changed but test file not updated
@@ -324,9 +347,9 @@ export function createTaskTrackerTool(deps: {
                         if (!wasUpdated) {
                           // Only warn for concrete test files (not all candidates)
                           if (/\.(test|spec|_test)\./i.test(candidate)) {
-                            chainWarnings.push(
-                              `⚠️ TEST DOSYASI GÜNCELLENMEDİ — "${modFile}" değişti ama ilişkili test dosyası "${candidate}" güncellenmedi.`
-                            );
+                            const msg = `⚠️ TEST DOSYASI GÜNCELLENMEDİ — "${modFile}" değişti ama ilişkili test dosyası "${candidate}" güncellenmedi.`;
+                            chainWarnings.push(msg);
+                            chainAdvisory.push(msg);
                             break; // One propagation warning per source file is enough
                           }
                         }
@@ -337,24 +360,39 @@ export function createTaskTrackerTool(deps: {
               }
             }
 
-            // If there are chain warnings, enforce based on gateMode
+            // If there are chain warnings, enforce based on severity:
+            // - Critical warnings (verification missing) ALWAYS block, regardless of gateMode
+            // - Advisory warnings (related files, propagation) follow gateMode
             if (chainWarnings.length > 0) {
+              const hasCritical = chainCritical.length > 0;
+              const shouldBlock = hasCritical || gateMode === "block";
+
               deps.auditLog.record({
                 sessionKey,
-                eventType: gateMode === "block" ? "gate_blocked" : "gate_warned",
-                severity: gateMode === "block" ? "high" : "medium",
-                message: `Workflow chain gate: task ${taskId} completion ${gateMode === "block" ? "blocked" : "warned"}`,
-                details: { gate: "workflow_chain", taskId, warnings: chainWarnings },
+                eventType: shouldBlock ? "gate_blocked" : "gate_warned",
+                severity: shouldBlock ? "high" : "medium",
+                message: `Workflow chain gate: task ${taskId} completion ${shouldBlock ? "blocked" : "warned"}`,
+                details: {
+                  gate: "workflow_chain",
+                  taskId,
+                  critical: chainCritical,
+                  advisory: chainAdvisory,
+                  gateMode,
+                  overriddenByCritical: hasCritical && gateMode === "warn",
+                },
               });
 
-              if (gateMode === "block") {
+              if (shouldBlock) {
                 return jsonResult({
                   error: "Görev tamamlanamıyor — workflow chain eksik",
                   warnings: chainWarnings,
+                  ...(hasCritical && gateMode === "warn" ? {
+                    note: "⛔ Doğrulama eksikliği kritik — gateMode: warn olsa bile engellendi. Test/build/lint çalıştır.",
+                  } : {}),
                   hint: "Önce doğrulama komutu çalıştır ve ilişkili dosyaları güncelle, sonra tekrar dene.",
                 });
               }
-              // In warn mode: allow completion but include warnings in response
+              // In warn mode with no critical issues: allow completion but include warnings
             }
 
             deps.store.updateTaskStatus(taskId, "completed", verification);

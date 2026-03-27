@@ -9,7 +9,7 @@
  */
 import type { SessionStateStore } from "../store/session-state.js";
 import type { AuditLog } from "../store/audit-log.js";
-import { RELATED_FILE_RULES } from "../tools/common.js";
+import { RELATED_FILE_RULES, isExcludedFromRelatedFileRules } from "../tools/common.js";
 
 export type CompletionIssue = {
   type: string;
@@ -86,6 +86,7 @@ export function handleAgentEnd(deps: {
         const missingUpdates: string[] = [];
 
         for (const modifiedFile of snapshot.modifiedFiles) {
+          if (isExcludedFromRelatedFileRules(modifiedFile)) continue;
           for (const rule of RELATED_FILE_RULES) {
             if (rule.pattern.test(modifiedFile)) {
               for (const required of rule.requires) {

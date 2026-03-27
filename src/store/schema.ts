@@ -4,7 +4,7 @@
  */
 import type { DatabaseSync } from "node:sqlite";
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 
 const MIGRATIONS: string[] = [
   // Version 1: Initial schema
@@ -134,6 +134,47 @@ const MIGRATIONS: string[] = [
 
   INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', '3');
   `,
+
+  // Version 4: Add 'plan_task_sync' + 'workflow_transition' to audit_log event_type CHECK constraint.
+  // SQLite cannot ALTER CHECK constraints, so we recreate the table.
+  `
+  CREATE TABLE IF NOT EXISTS audit_log_v4 (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_key TEXT,
+    agent_id TEXT,
+    trigger_type TEXT,
+    event_type TEXT NOT NULL CHECK(event_type IN (
+      'session_start', 'session_end',
+      'task_created', 'task_completed', 'task_incomplete',
+      'plan_created', 'plan_completed', 'plan_incomplete',
+      'plan_task_sync',
+      'gate_warned', 'gate_blocked',
+      'completion_check_pass', 'completion_check_fail',
+      'tool_error', 'memory_not_written',
+      'related_file_not_updated',
+      'workflow_transition'
+    )),
+    severity TEXT NOT NULL DEFAULT 'info' CHECK(severity IN ('info', 'low', 'medium', 'high', 'critical')),
+    message TEXT NOT NULL,
+    details TEXT,
+    duration_ms INTEGER,
+    timestamp TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  INSERT INTO audit_log_v4 (id, session_key, agent_id, trigger_type, event_type, severity, message, details, duration_ms, timestamp)
+    SELECT id, session_key, agent_id, trigger_type, event_type, severity, message, details, duration_ms, timestamp
+    FROM audit_log;
+
+  DROP TABLE audit_log;
+  ALTER TABLE audit_log_v4 RENAME TO audit_log;
+
+  CREATE INDEX IF NOT EXISTS idx_audit_log_session ON audit_log(session_key);
+  CREATE INDEX IF NOT EXISTS idx_audit_log_event ON audit_log(event_type);
+  CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp ON audit_log(timestamp);
+  CREATE INDEX IF NOT EXISTS idx_audit_log_severity ON audit_log(severity);
+
+  INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', '4');
+  `,
 ];
 
 /** Safely add a column if it doesn't exist (ALTER TABLE ADD COLUMN is not idempotent in SQLite). */
@@ -174,8 +215,17 @@ export function migrateDatabase(db: DatabaseSync): void {
   }
 
   // Post-migration: safe ALTER TABLE operations (always run — idempotent via PRAGMA check)
-  // Runs unconditionally to handle partial-migration crash scenarios
-  safeAddColumn(db, "session_state", "active_debug_id", "TEXT REFERENCES debug_sessions(id) ON DELETE SET NULL");
-  safeAddColumn(db, "plans", "alternatives", "TEXT DEFAULT '[]'");
-  safeAddColumn(db, "plans", "change_summary", "TEXT");
+  // Wrapped in transaction for atomicity — all columns added or none.
+  // Individual safeAddColumn calls are idempotent (PRAGMA check), so re-running after
+  // a crash will simply skip already-added columns and add missing ones.
+  db.exec("BEGIN");
+  try {
+    safeAddColumn(db, "session_state", "active_debug_id", "TEXT REFERENCES debug_sessions(id) ON DELETE SET NULL");
+    safeAddColumn(db, "plans", "alternatives", "TEXT DEFAULT '[]'");
+    safeAddColumn(db, "plans", "change_summary", "TEXT");
+    db.exec("COMMIT");
+  } catch (err) {
+    try { db.exec("ROLLBACK"); } catch { /* rollback best-effort */ }
+    throw err;
+  }
 }

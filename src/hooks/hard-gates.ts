@@ -50,6 +50,14 @@ export function handleBeforeToolCall(deps: {
       "shell", "terminal", "exec", "run_terminal_command",
     ]);
 
+    // Helper: mark gate block in store so after_tool_call skips tracking for this call.
+    // Without this, OpenClaw may fire after_tool_call for blocked calls without setting
+    // event.error, causing addModifiedFile to inflate writesSinceVerification counter.
+    const blockAndMark = (reason: string): { block: true; blockReason: string } => {
+      deps.store.markGateBlocked(sessionKey);
+      return { block: true, blockReason: reason };
+    };
+
     try {
       // ── GATE 1: Read before edit ────────────────────────
 
@@ -85,10 +93,7 @@ export function handleBeforeToolCall(deps: {
             });
 
             if (deps.gateMode === "block") {
-              return {
-                block: true,
-                blockReason: `⚠️ ${message}`,
-              };
+              return blockAndMark(`⚠️ ${message}`);
             }
           }
         }
@@ -129,10 +134,7 @@ export function handleBeforeToolCall(deps: {
             });
 
             if (deps.gateMode === "block") {
-              return {
-                block: true,
-                blockReason: `⚠️ ${message}`,
-              };
+              return blockAndMark(`⚠️ ${message}`);
             }
           }
         }
@@ -172,10 +174,7 @@ export function handleBeforeToolCall(deps: {
             });
 
             if (deps.gateMode === "block") {
-              return {
-                block: true,
-                blockReason: `⚠️ ${message}`,
-              };
+              return blockAndMark(`⚠️ ${message}`);
             }
           }
         }
@@ -214,10 +213,7 @@ export function handleBeforeToolCall(deps: {
           });
 
           if (deps.gateMode === "block") {
-            return {
-              block: true,
-              blockReason: message,
-            };
+            return blockAndMark(message);
           }
         }
       }
@@ -250,10 +246,7 @@ export function handleBeforeToolCall(deps: {
                 });
 
                 // ALWAYS block dangerous commands — ignores gateMode
-                return {
-                  block: true,
-                  blockReason: message,
-                };
+                return blockAndMark(message);
               }
             } catch (regexErr) {
               // Invalid regex pattern — log warning (security-critical: user should know their pattern is broken)
@@ -315,7 +308,7 @@ export function handleBeforeToolCall(deps: {
                 details: { gate: "bootstrap_size", file: filePath, sizeKB: estimatedSizeKB, limitKB: blockKB },
               });
 
-              return { block: true, blockReason: message };
+              return blockAndMark(message);
             }
 
             if (FILE_OVERWRITE_TOOLS.has(event.toolName) && estimatedSizeKB > warnKB) {
@@ -335,6 +328,108 @@ export function handleBeforeToolCall(deps: {
           }
         }
       }
+      // ── GATE 7: Verify-First enforcement (P5) ──────────
+      // Escalating response to unverified writes:
+      //   - 4+ writes: audit log warning (agent may not see, but recorded)
+      //   - 8+ writes: HARD BLOCK — forces agent to run test/build/lint before more writes
+      // This gate fires on every file write, even during autonomous tool call turns,
+      // solving the before_prompt_build timing gap where periodic warnings never appeared.
+
+      if (isFileWriteTool(event.toolName)) {
+        const writes = deps.store.getWritesSinceVerification(sessionKey);
+
+        if (writes >= 8) {
+          const message =
+            `🛑 DOĞRULAMA ZORUNLU: ${writes} dosya yazımı doğrulama olmadan yapıldı. ` +
+            `Daha fazla dosya yazmadan önce Bash tool ile doğrulama komutu çalıştır. ` +
+            `Kabul edilen komutlar: tsc, tsc --noEmit, npm test, npx tsc, pytest, ` +
+            `go test, cargo check, eslint, jest, vitest, make test, dotnet test. ` +
+            `ÖNEMLİ: echo veya basit shell komutu doğrulama sayılmaz — gerçek bir compiler/test/lint komutu gerekli. ` +
+            `Doğrulama sonrası yazıma devam edebilirsin.`;
+
+          deps.auditLog.record({
+            sessionKey,
+            agentId: deps.agentId,
+            eventType: "gate_blocked",
+            severity: "high",
+            message,
+            details: {
+              gate: "verify_first",
+              tool: event.toolName,
+              writesSinceVerification: writes,
+              threshold: 8,
+            },
+          });
+
+          return blockAndMark(message);
+
+        } else if (writes >= 4) {
+          // Audit-only nudge — recorded for observability, may not be visible to agent
+          deps.auditLog.record({
+            sessionKey,
+            agentId: deps.agentId,
+            eventType: "gate_warned",
+            severity: "medium",
+            message: `⚠️ Verify-First uyarı: ${writes} dosya yazımı doğrulama olmadan. 8'e ulaşırsa yazım engellenecek.`,
+            details: {
+              gate: "verify_first",
+              tool: event.toolName,
+              writesSinceVerification: writes,
+              threshold: 4,
+              blockThreshold: 8,
+            },
+          });
+        }
+      }
+
+      // ── GATE 8: Complexity Review enforcement (P6) ─────
+      // When the session has accumulated significant complexity (6+ modified files
+      // spanning 3+ directories) AND no quality_checklist review has been done,
+      // block further writes. Forces the agent to pause and run quality_checklist
+      // before continuing — prevents "write everything then realize it's broken" pattern.
+      // Only triggers once per review cycle (hasQualityReview resets on new writes).
+
+      if (isFileWriteTool(event.toolName)) {
+        const snapshot = deps.store.getSnapshot(sessionKey);
+        if (snapshot && !deps.store.hasQualityReview(sessionKey)) {
+          const modifiedFiles = snapshot.modifiedFiles;
+          const dirSet = new Set<string>();
+          for (const f of modifiedFiles) {
+            const lastSlash = f.lastIndexOf("/");
+            if (lastSlash > 0) {
+              dirSet.add(f.substring(0, lastSlash));
+            }
+          }
+
+          const fileCount = modifiedFiles.length;
+          const dirCount = dirSet.size;
+
+          if (fileCount >= 6 && dirCount >= 3) {
+            const message =
+              `🛑 KALİTE İNCELEMESİ ZORUNLU: ${fileCount} dosya ${dirCount} dizinde değiştirildi — karmaşıklık eşiği aşıldı. ` +
+              `Daha fazla dosya yazmadan önce quality_checklist(action: "review") çalıştır. ` +
+              `Bu, cross-cutting hataları erken yakalamak ve tutarlılığı sağlamak için gerekli.`;
+
+            deps.auditLog.record({
+              sessionKey,
+              agentId: deps.agentId,
+              eventType: "gate_blocked",
+              severity: "high",
+              message,
+              details: {
+                gate: "complexity_review",
+                tool: event.toolName,
+                fileCount,
+                dirCount,
+                directories: [...dirSet],
+              },
+            });
+
+            return blockAndMark(message);
+          }
+        }
+      }
+
     } catch (err) {
       // Log error to console AND attempt audit log
       const errMsg = err instanceof Error ? err.message : String(err);
@@ -353,10 +448,7 @@ export function handleBeforeToolCall(deps: {
       // SAFETY: For shell tools, fail-closed (block) rather than fail-open
       // A gate infrastructure error should NOT allow potentially dangerous commands through
       if (SHELL_TOOL_NAMES.has(event.toolName)) {
-        return {
-          block: true,
-          blockReason: `🛑 Systematic Engine iç hatası — güvenlik gate'leri çalışamadı. Shell komutu güvenlik nedeniyle engellendi. Hata: ${errMsg}`,
-        };
+        return blockAndMark(`🛑 Systematic Engine iç hatası — güvenlik gate'leri çalışamadı. Shell komutu güvenlik nedeniyle engellendi. Hata: ${errMsg}`);
       }
       // For non-shell tools: fail-open (don't block agent on plugin errors)
     }

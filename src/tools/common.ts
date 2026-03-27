@@ -64,6 +64,24 @@ export type RelatedFileRule = {
   description: string;
 };
 
+/** Paths excluded from related-file rules.
+ *  Files under these directories are temporary/test artifacts — requiring
+ *  STATE.md updates for them creates false positives. */
+const RELATED_FILE_EXCLUDE_PATTERNS = [
+  /^\/tmp\//i,
+  /^\/var\/folders\//i,       // macOS temp
+  /\/node_modules\//i,
+  /^\/private\/tmp\//i,       // macOS /tmp symlink target
+  /\/\.cache\//i,
+  /\/dist\//i,
+  /\/build\//i,
+];
+
+/** Check if a file path is in a temporary/excluded location. */
+export function isExcludedFromRelatedFileRules(filePath: string): boolean {
+  return RELATED_FILE_EXCLUDE_PATTERNS.some(p => p.test(filePath));
+}
+
 /** Rules: when a source file type is modified, certain metadata files should also be updated. */
 export const RELATED_FILE_RULES: RelatedFileRule[] = [
   {
@@ -185,7 +203,7 @@ export function checkPropagation(
 
 /** Extract file path from tool parameters — shared across hooks. */
 export function extractFilePath(params: Record<string, unknown>): string | null {
-  const candidates = ["path", "file_path", "filePath", "file", "filename", "target"];
+  const candidates = ["file_path", "filePath", "path", "file", "target_file", "target", "filename"];
   for (const key of candidates) {
     const value = params[key];
     if (typeof value === "string" && value.trim()) {

@@ -8,7 +8,7 @@
 import { Type } from "@sinclair/typebox";
 import type { SessionStateStore, PlanStep, PlanPhase, SessionSnapshot } from "../store/session-state.js";
 import type { AuditLog } from "../store/audit-log.js";
-import { jsonResult, generateId, renderPlan, RELATED_FILE_RULES, checkPropagation, type AnyAgentTool } from "./common.js";
+import { jsonResult, generateId, renderPlan, RELATED_FILE_RULES, checkPropagation, isExcludedFromRelatedFileRules, type AnyAgentTool } from "./common.js";
 import type { GateMode } from "../hooks/hard-gates.js";
 
 const PlanModeSchema = Type.Object({
@@ -42,6 +42,22 @@ const PlanModeSchema = Type.Object({
   }), {
     description: "Alternative approaches considered BEFORE choosing this plan. ZORUNLU for 4+ step plans (min 2 alternatives). Include 'do nothing' option and at least 1 other rejected approach with trade-off. Will be REJECTED without alternatives for complex plans.",
   })),
+  brainstorm: Type.Optional(Type.Object({
+    constraints: Type.Array(Type.String(), {
+      description: "Constraint Discovery — limits, rules, patterns that constrain the solution (e.g. 'SQLite single-writer', 'must be backward-compatible', 'existing code uses X pattern')",
+    }),
+    impact_radius: Type.Array(Type.String(), {
+      description: "Impact Radius — what else does this change affect? Other files, modules, users, APIs, performance.",
+    }),
+    reversibility: Type.String({
+      description: "Reversibility — can this be undone? What's the rollback plan if it fails?",
+    }),
+    success_criteria: Type.Array(Type.String(), {
+      description: "Success Criteria — measurable outcomes that prove this worked. NOT vague ('it works') — specific ('npm test passes', 'response time < 200ms').",
+    }),
+  }, {
+    description: "4-Lens Brainstorm Analysis — structured pre-planning thinking. ZORUNLU for 4+ step plans. Forces the agent to think through constraints, impact, reversibility, and success criteria BEFORE planning.",
+  })),
   change_summary: Type.Optional(Type.String({
     description: "Summary of all changes made during plan execution (required for verify)",
   })),
@@ -62,7 +78,8 @@ export function createPlanModeTool(deps: {
       "Use this before starting complex tasks (creating new features, multi-file changes). " +
       "Workflow: create → approve → execute steps → verify → complete. " +
       "Plan steps are automatically linked to task_tracker for progress tracking. " +
-      "IMPORTANT: For 'creating' workflows, create a plan BEFORE writing code.",
+      "IMPORTANT: For 'creating' workflows, create a plan BEFORE writing code. " +
+      "Complex plans (4+ steps) require 4-Lens Brainstorm (constraints, impact, reversibility, success criteria) + alternatives.",
     parameters: PlanModeSchema,
     async execute(_toolCallId, params) {
       const p = params as Record<string, unknown>;
@@ -81,13 +98,20 @@ export function createPlanModeTool(deps: {
               return jsonResult({ error: "goal and steps required for create action" });
             }
 
-            // ── BRAINSTORM GATE: Alternatives required ──
+            // ── 4-LENS BRAINSTORM GATE ──────────────────
+            // Complex plans (4+ steps) MUST include structured brainstorm analysis.
+            // Simple plans get it as a recommendation only.
             const alternatives = p.alternatives as Array<{ approach: string; tradeoff: string }> | undefined;
+            const brainstorm = p.brainstorm as {
+              constraints: string[];
+              impact_radius: string[];
+              reversibility: string;
+              success_criteria: string[];
+            } | undefined;
 
-            // Complexity threshold: alternatives required only for plans with 4+ steps
-            // Simple plans (1-3 steps) get alternatives as optional recommendation
             const isComplexPlan = stepStrings.length >= 4;
 
+            // Gate 1: Alternatives required for complex plans
             if (isComplexPlan && (!alternatives || alternatives.length < 2)) {
               return jsonResult({
                 error: `Bu plan ${stepStrings.length} adım içeriyor — en az 2 alternatif yaklaşım zorunlu.`,
@@ -98,6 +122,61 @@ export function createPlanModeTool(deps: {
                 ],
                 rule: "4+ adımlık planlarda alternatif düşünmek zorunlu. İlk aklına geleni değil, bilinçli bir seçim yap.",
               });
+            }
+
+            // Gate 2: 4-Lens Brainstorm required for complex plans
+            if (isComplexPlan && !brainstorm) {
+              return jsonResult({
+                error: `Bu plan ${stepStrings.length} adım içeriyor — 4-Lens Brainstorm analizi zorunlu.`,
+                hint: "Plan oluşturmadan ÖNCE problemi 4 açıdan analiz et:",
+                lenses: {
+                  constraints: "Kısıtlar — mevcut pattern'lar, uyumluluk gereksinimleri, performans limitleri",
+                  impact_radius: "Etki alanı — bu değişiklik başka hangi dosyaları/modülleri/API'leri etkiler?",
+                  reversibility: "Geri alınabilirlik — başarısız olursa nasıl geri alırız? Rollback planı ne?",
+                  success_criteria: "Başarı kriterleri — bunun işe yaradığını NASIL bileceğiz? Ölçülebilir sonuçlar.",
+                },
+                example: {
+                  constraints: ["SQLite single-writer — concurrent access yok", "Mevcut hook API sadece sync callback destekliyor"],
+                  impact_radius: ["prompt-inject.ts yeni field okuyacak", "completion-check.ts yeni kontrol eklenecek"],
+                  reversibility: "Yeni tablo ekleniyor, geri almak için DROP TABLE yeterli. Mevcut tablolara dokunulmadığı için risk düşük.",
+                  success_criteria: ["npx tsc --noEmit hatasız geçer", "Plan oluşturma brainstorm olmadan reddedilir", "Mevcut testler kırılmaz"],
+                },
+                rule: "Karmaşık planlarda 4-Lens analizi zorunlu. Düşünmeden kodlama yok.",
+              });
+            }
+
+            // Validate brainstorm quality (if provided)
+            if (brainstorm) {
+              const brainstormIssues: string[] = [];
+
+              if (!brainstorm.constraints || brainstorm.constraints.length === 0) {
+                brainstormIssues.push("constraints boş — en az 1 kısıt belirle (teknik limit, uyumluluk kuralı, mevcut pattern).");
+              }
+              if (!brainstorm.impact_radius || brainstorm.impact_radius.length === 0) {
+                brainstormIssues.push("impact_radius boş — bu değişikliğin etkileyeceği en az 1 alan belirle.");
+              }
+              if (!brainstorm.reversibility || brainstorm.reversibility.trim().length < 20) {
+                brainstormIssues.push("reversibility çok kısa (min 20 karakter) — geri alma planını somut olarak açıkla.");
+              }
+              if (!brainstorm.success_criteria || brainstorm.success_criteria.length === 0) {
+                brainstormIssues.push("success_criteria boş — en az 1 ölçülebilir başarı kriteri belirle.");
+              } else {
+                // Check for vague criteria
+                const VAGUE_CRITERIA = /^(çalışır|works|it works|test geçer|ok|tamam|iyi|good)$/i;
+                for (const criterion of brainstorm.success_criteria) {
+                  if (VAGUE_CRITERIA.test(criterion.trim())) {
+                    brainstormIssues.push(`Belirsiz başarı kriteri: "${criterion}". Ölçülebilir olmalı (ör. "npm test 15/15 geçer").`);
+                  }
+                }
+              }
+
+              if (brainstormIssues.length > 0) {
+                return jsonResult({
+                  error: "4-Lens Brainstorm kalite kontrolünden geçemedi",
+                  issues: brainstormIssues,
+                  rule: "Her lens en az 1 somut madde içermeli, reversibility ≥20 karakter, success_criteria ölçülebilir olmalı.",
+                });
+              }
             }
 
             // Quality check on alternatives (skip if none provided for simple plans)
@@ -154,6 +233,16 @@ export function createPlanModeTool(deps: {
             // Store alternatives (may be empty for simple plans)
             deps.store.updatePlanAlternatives(planId, effectiveAlternatives);
 
+            // Store brainstorm in memory for verify-time cross-check
+            if (brainstorm) {
+              deps.store.storeBrainstorm(planId, {
+                constraints: brainstorm.constraints,
+                impactRadius: brainstorm.impact_radius,
+                reversibility: brainstorm.reversibility,
+                successCriteria: brainstorm.success_criteria,
+              });
+            }
+
             // Auto-create task_tracker entries for each step
             for (const step of steps) {
               deps.store.createTask({
@@ -168,17 +257,42 @@ export function createPlanModeTool(deps: {
               sessionKey,
               eventType: "plan_created",
               severity: "info",
-              message: `Plan oluşturuldu: "${goal}" (${steps.length} adım)`,
-              details: { planId, goal, stepCount: steps.length, alternativesCount: effectiveAlternatives.length },
+              message: `Plan oluşturuldu: "${goal}" (${steps.length} adım, ${effectiveAlternatives.length} alternatif${brainstorm ? ", 4-Lens ✓" : ""})`,
+              details: {
+                planId,
+                goal,
+                stepCount: steps.length,
+                alternativesCount: effectiveAlternatives.length,
+                brainstormProvided: !!brainstorm,
+                ...(brainstorm ? {
+                  constraintCount: brainstorm.constraints.length,
+                  impactCount: brainstorm.impact_radius.length,
+                  successCriteriaCount: brainstorm.success_criteria.length,
+                } : {}),
+              },
             });
 
             const plan = deps.store.getActivePlan(sessionKey)!;
             return jsonResult({
               success: true,
               planId,
-              message: `Plan oluşturuldu (${effectiveAlternatives.length} alternatif değerlendirildi). Şimdi kullanıcıdan onay al (approve action).`,
+              message: `Plan oluşturuldu (${effectiveAlternatives.length} alternatif${brainstorm ? " + 4-Lens analiz" : ""} değerlendirildi). Şimdi kullanıcıdan onay al (approve action).`,
               plan: renderPlan(plan),
               alternativesConsidered: effectiveAlternatives,
+              ...(brainstorm ? {
+                brainstormSummary: {
+                  constraints: brainstorm.constraints,
+                  impactRadius: brainstorm.impact_radius,
+                  reversibility: brainstorm.reversibility,
+                  successCriteria: brainstorm.success_criteria,
+                },
+              } : {}),
+              ...(isComplexPlan && brainstorm ? {
+                verificationNote: "✅ Bu plan doğrulanırken success_criteria kontrol edilecek.",
+              } : {}),
+              ...(!isComplexPlan && !brainstorm ? {
+                recommendation: "💡 Basit planlar için de 4-Lens brainstorm önerilir — daha iyi sonuçlar verir.",
+              } : {}),
               phase: "drafting",
               nextAction: "approve — kullanıcı onayından sonra",
             });
@@ -359,6 +473,7 @@ export function createPlanModeTool(deps: {
               const checkedRequired = new Set<string>();
               const missingRelated: string[] = [];
               for (const modFile of snapshot.modifiedFiles) {
+                if (isExcludedFromRelatedFileRules(modFile)) continue;
                 for (const rule of RELATED_FILE_RULES) {
                   if (rule.pattern.test(modFile)) {
                     for (const req of rule.requires) {
@@ -414,6 +529,37 @@ export function createPlanModeTool(deps: {
                 hint: "Yukarıdaki sorunları çöz, sonra tekrar verify çağır.",
               });
             }
+            // ── 4-LENS CROSS-CHECK: Success criteria validation ──
+            const brainstormData = deps.store.getBrainstorm(plan.id);
+            if (brainstormData && brainstormData.successCriteria.length > 0) {
+              const verificationLower = verification.toLowerCase();
+              const changeSummaryLower = changeSummary.toLowerCase();
+              const combined = verificationLower + " " + changeSummaryLower;
+
+              const unaddressedCriteria: string[] = [];
+              for (const criterion of brainstormData.successCriteria) {
+                // Extract key terms from criterion to check if addressed
+                const keyTerms = criterion.toLowerCase()
+                  .replace(/[^a-zçğıöşü0-9\s]/gi, "")
+                  .split(/\s+/)
+                  .filter(t => t.length > 3); // Only meaningful words
+
+                // Check if at least 40% of key terms appear in verification + change_summary
+                const matchCount = keyTerms.filter(t => combined.includes(t)).length;
+                const matchRatio = keyTerms.length > 0 ? matchCount / keyTerms.length : 0;
+
+                if (matchRatio < 0.4) {
+                  unaddressedCriteria.push(criterion);
+                }
+              }
+
+              if (unaddressedCriteria.length > 0) {
+                crossCheckWarnings.push(
+                  `📋 BAŞARI KRİTERLERİ — ${unaddressedCriteria.length}/${brainstormData.successCriteria.length} kriter doğrulamada belirtilmemiş: ${unaddressedCriteria.join("; ")}`
+                );
+              }
+            }
+
             // Store the change summary for audit trail
             deps.store.updatePlanChangeSummary(plan.id, changeSummary);
             deps.store.updatePlanPhase(plan.id, "completed");
@@ -589,6 +735,7 @@ function buildReviewChecklist(snapshot: SessionSnapshot | null): ReviewChecklist
     const missingUpdates: string[] = [];
 
     for (const modifiedFile of snapshot.modifiedFiles) {
+      if (isExcludedFromRelatedFileRules(modifiedFile)) continue;
       for (const rule of RELATED_FILE_RULES) {
         if (rule.pattern.test(modifiedFile)) {
           for (const required of rule.requires) {
