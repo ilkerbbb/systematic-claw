@@ -10,6 +10,7 @@ export type AuditEventType =
   | "plan_created" | "plan_completed" | "plan_incomplete"
   | "gate_warned" | "gate_blocked"
   | "completion_check_pass" | "completion_check_fail"
+  | "plan_task_sync"
   | "tool_error" | "memory_not_written"
   | "related_file_not_updated";
 

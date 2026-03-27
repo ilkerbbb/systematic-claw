@@ -198,6 +198,12 @@ export function createPlanModeTool(deps: {
             deps.store.updatePlanPhase(plan.id, "executing");
             deps.store.updatePlanStep(plan.id, 0);
 
+            // Set the first step's task to in_progress
+            const firstStepContent = plan.steps[0]?.content;
+            if (firstStepContent) {
+              syncPlanTaskStatus(deps.store, sessionKey, firstStepContent, "in_progress");
+            }
+
             const updated = deps.store.getActivePlan(sessionKey)!;
             return jsonResult({
               success: true,
@@ -222,10 +228,16 @@ export function createPlanModeTool(deps: {
 
             // Mark current step as completed and persist to DB
             const steps = [...plan.steps];
+            const completedStepContent = steps[plan.currentStep]?.content;
             if (steps[plan.currentStep]) {
               steps[plan.currentStep] = { ...steps[plan.currentStep], completed: true };
             }
             deps.store.updatePlanSteps(plan.id, steps);
+
+            // Auto-complete the matching [Plan] task (bypasses chain gate — plan has its own verification)
+            if (completedStepContent) {
+              syncPlanTaskStatus(deps.store, sessionKey, completedStepContent, "completed");
+            }
 
             // Advance to next step or move to verifying
             const nextStep = plan.currentStep + 1;
@@ -242,6 +254,13 @@ export function createPlanModeTool(deps: {
             }
 
             deps.store.updatePlanStep(plan.id, nextStep);
+
+            // Set next step's task to in_progress
+            const nextStepContent = steps[nextStep]?.content;
+            if (nextStepContent) {
+              syncPlanTaskStatus(deps.store, sessionKey, nextStepContent, "in_progress");
+            }
+
             const updated = deps.store.getActivePlan(sessionKey)!;
             return jsonResult({
               success: true,
@@ -398,6 +417,24 @@ export function createPlanModeTool(deps: {
             // Store the change summary for audit trail
             deps.store.updatePlanChangeSummary(plan.id, changeSummary);
             deps.store.updatePlanPhase(plan.id, "completed");
+
+            // Auto-complete ALL remaining [Plan] tasks (plan verification covers them)
+            const planTasks = deps.store.getTasks(sessionKey);
+            let autoCompletedTasks = 0;
+            for (const task of planTasks) {
+              if (task.content.startsWith("[Plan] ") && task.status !== "completed") {
+                deps.store.updateTaskStatus(task.id, "completed", "Plan doğrulandı ve tamamlandı");
+                autoCompletedTasks++;
+              }
+            }
+            if (autoCompletedTasks > 0) {
+              deps.auditLog.record({
+                sessionKey,
+                eventType: "plan_task_sync",
+                severity: "info",
+                message: `${autoCompletedTasks} plan task'ı otomatik tamamlandı (plan verify başarılı)`,
+              });
+            }
 
             deps.auditLog.record({
               sessionKey,
@@ -614,6 +651,20 @@ function buildReviewChecklist(snapshot: SessionSnapshot | null): ReviewChecklist
   }
 
   return items;
+}
+
+/** Sync a [Plan] task status when its corresponding plan step is completed.
+ *  Matches by content: task.content === "[Plan] " + stepContent.
+ *  Bypasses chain gate — plan_mode has its own verification gates. */
+function syncPlanTaskStatus(store: SessionStateStore, sessionKey: string, stepContent: string, status: "completed" | "in_progress"): void {
+  const tasks = store.getTasks(sessionKey);
+  const targetContent = `[Plan] ${stepContent}`;
+  for (const task of tasks) {
+    if (task.content === targetContent && task.status !== status) {
+      store.updateTaskStatus(task.id, status, status === "completed" ? "Plan adımı tamamlandı" : undefined);
+      return; // Only match the first one
+    }
+  }
 }
 
 function flattenAllTasks(tasks: Array<{ status: string; content: string; children?: unknown[] }>): Array<{ status: string; content: string }> {
