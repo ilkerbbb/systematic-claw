@@ -153,6 +153,8 @@ export class SessionStateStore {
       this._pendingGateBlocks,
       this._writesAtQualityReview,
       this._filesAtQualityReview,
+      this._lastSearchTs,
+      this._lastGitCommandTs,
     ];
     for (const map of maps) {
       if (map.size > limit) {
@@ -269,6 +271,65 @@ export class SessionStateStore {
     successCriteria: string[];
   } | undefined {
     return this._brainstormCache.get(planId);
+  }
+
+  // ── Impact Analysis Tracking (in-memory) ─────
+  // Tracks whether agent did a cross-reference search after modifying files.
+  // When 3+ files are modified and no search was done since last modification,
+  // periodic warnings nudge the agent to grep for cross-references.
+  private _lastSearchTs = new Map<string, number>();
+
+  /** Record that agent ran a search/grep command — marks impact analysis as done. */
+  recordSearch(sessionKey: string): void {
+    this._lastSearchTs.set(sessionKey, Date.now());
+  }
+
+  /** Check if impact analysis is pending — files modified but no search done since. */
+  isImpactAnalysisPending(sessionKey: string): boolean {
+    try {
+      const snapshot = this.getSnapshot(sessionKey);
+      if (!snapshot || snapshot.modifiedFiles.length < 3) return false;
+
+      const lastSearchTs = this._lastSearchTs.get(sessionKey) ?? 0;
+      const lastModTs = this._lastModificationTs.get(sessionKey) ?? 0;
+
+      // If last search was AFTER last modification, impact analysis likely done
+      return lastSearchTs < lastModTs;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Mark impact analysis as explicitly done (e.g., after quality_checklist). */
+  markImpactAnalysisDone(sessionKey: string): void {
+    this._lastSearchTs.set(sessionKey, Date.now());
+  }
+
+  // ── Git Hygiene Tracking (in-memory) ─────
+  private _lastGitCommandTs = new Map<string, number>();
+
+  /** Record that agent ran a git command. */
+  recordGitCommand(sessionKey: string): void {
+    this._lastGitCommandTs.set(sessionKey, Date.now());
+  }
+
+  /** Check if git hygiene reminder is needed — many file modifications but no git command. */
+  isGitReminderNeeded(sessionKey: string): boolean {
+    try {
+      const snapshot = this.getSnapshot(sessionKey);
+      if (!snapshot || snapshot.modifiedFiles.length < 3) return false;
+
+      const callCount = this._recentCalls.get(sessionKey)?.length ?? 0;
+      if (callCount < 15) return false;
+
+      const lastGitTs = this._lastGitCommandTs.get(sessionKey) ?? 0;
+      const lastModTs = this._lastModificationTs.get(sessionKey) ?? 0;
+
+      // Remind if no git command since last modification
+      return lastGitTs < lastModTs;
+    } catch {
+      return false;
+    }
   }
 
   // ── Quality Review Tracking (in-memory) ─────
@@ -491,6 +552,8 @@ export class SessionStateStore {
     this._pendingGateBlocks.delete(sessionKey);
     this._writesAtQualityReview.delete(sessionKey);
     this._filesAtQualityReview.delete(sessionKey);
+    this._lastSearchTs.delete(sessionKey);
+    this._lastGitCommandTs.delete(sessionKey);
     // Note: _brainstormCache is keyed by planId, not sessionKey — cleared when plan completes
 
     // Prune all in-memory Maps to prevent unbounded growth across many sessions

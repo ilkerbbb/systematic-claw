@@ -436,7 +436,29 @@ function buildPeriodicWarnings(store: SessionStateStore, sessionKey: string): st
     }
   }
 
-  // Warning 10: Complexity-Based Quality Review Triggers
+  // Warning 10: Impact Analysis — cross-reference check for modified files
+  if (store.isImpactAnalysisPending(sessionKey)) {
+    const fileNames = snapshot.modifiedFiles
+      .slice(0, 5)
+      .map(f => f.split("/").pop() ?? f)
+      .join(", ");
+    const moreText = snapshot.modifiedFiles.length > 5 ? ` (+${snapshot.modifiedFiles.length - 5} daha)` : "";
+    warnings.push(
+      `- ⚠️ **ETKİ ANALİZİ EKSİK** — ${snapshot.modifiedFiles.length} dosya değiştirildi (${fileNames}${moreText}). ` +
+      `Bu dosyalara referans veren başka dosyalar olabilir. ` +
+      `\`grep\` veya \`search\` ile cross-reference kontrolü yap — etkilenen dosyaları da güncelle.`
+    );
+  }
+
+  // Warning 11: Git hygiene — remind to commit when many files are modified
+  if (store.isGitReminderNeeded(sessionKey)) {
+    warnings.push(
+      `- 💡 **Git kontrol** — ${snapshot.modifiedFiles.length} dosya değiştirildi, henüz commit yapılmadı. ` +
+      `Düzenli commit: \`git status\` → \`git add\` → \`git commit\``
+    );
+  }
+
+  // Warning 12: Complexity-Based Quality Review Triggers
   // Instead of simple call-count thresholds, use complexity signals:
   // - Cross-directory changes (3+ directories)
   // - Same-file revisions (file edited 3+ times = churn risk)

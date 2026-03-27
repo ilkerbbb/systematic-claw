@@ -59,6 +59,12 @@ const MEMORY_FILE_PATTERNS = [
   /\/temp\//i,
 ];
 
+// Search/grep tools — when agent uses these, impact analysis is likely happening
+const SEARCH_TOOLS = new Set([
+  "Grep", "grep", "search", "ripgrep", "Glob", "glob",
+  "find_files", "list_files", "file_search",
+]);
+
 // Skill file patterns — detect when agent reads/uses a skill file
 const SKILL_FILE_PATTERNS = [
   /\/skills\//i,
@@ -230,6 +236,11 @@ export function handleAfterToolCall(deps: {
         }
       }
 
+      // Track search/grep tools for impact analysis detection
+      if (SEARCH_TOOLS.has(event.toolName) && !event.error) {
+        deps.store.recordSearch(sessionKey);
+      }
+
       // Track verification commands (test/build/lint via shell tools)
       // Records timestamp in-memory for Gate 3 (verify-before-complete)
       if (isShellTool(event.toolName) && !event.error) {
@@ -237,6 +248,16 @@ export function handleAfterToolCall(deps: {
         if (command) {
           if (isVerificationCommand(command)) {
             deps.store.recordVerification(sessionKey);
+          }
+
+          // Detect search commands in shell (grep, rg, find, ag, ack) for impact analysis
+          if (/\b(grep|rg|find|ag|ack|ripgrep)\b/.test(command)) {
+            deps.store.recordSearch(sessionKey);
+          }
+
+          // Detect git commands for git hygiene tracking
+          if (/\bgit\s+(status|add|commit|diff|log|stash|push)\b/.test(command)) {
+            deps.store.recordGitCommand(sessionKey);
           }
 
           // Shell write detection: detect file writes via redirects, cp, sed -i, etc.

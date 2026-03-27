@@ -170,6 +170,13 @@ export function createTaskTrackerTool(deps: {
                   updateChainWarnings.push(msg);
                   updateAdvisory.push(msg);
                 }
+
+                // Check: Impact analysis
+                if (deps.store.isImpactAnalysisPending(sessionKey)) {
+                  const msg = `⚠️ ETKİ ANALİZİ EKSİK — ${snapshot.modifiedFiles.length} dosya değiştirildi ama cross-reference kontrolü yapılmadı.`;
+                  updateChainWarnings.push(msg);
+                  updateAdvisory.push(msg);
+                }
               }
 
               if (updateChainWarnings.length > 0) {
@@ -358,6 +365,14 @@ export function createTaskTrackerTool(deps: {
                   }
                 }
               }
+            }
+
+            // Check 4: Impact analysis — cross-reference check for modified files
+            if (snapshot && deps.store.isImpactAnalysisPending(sessionKey)) {
+              const msg = `⚠️ ETKİ ANALİZİ EKSİK — ${snapshot.modifiedFiles.length} dosya değiştirildi ama cross-reference kontrolü yapılmadı. ` +
+                `grep/search ile etkilenen dosyaları kontrol et.`;
+              chainWarnings.push(msg);
+              chainAdvisory.push(msg);
             }
 
             // If there are chain warnings, enforce based on severity:

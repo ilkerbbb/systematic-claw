@@ -135,8 +135,10 @@ export function createQualityChecklistTool(deps: {
             });
           }
 
-          // Review passed — record it
+          // Review passed — record it. Also marks impact analysis as done
+          // (quality review implicitly includes cross-reference consideration).
           deps.store.recordQualityReview(sessionKey);
+          deps.store.markImpactAnalysisDone(sessionKey);
 
           deps.auditLog.record({
             sessionKey,
