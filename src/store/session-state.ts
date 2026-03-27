@@ -151,6 +151,8 @@ export class SessionStateStore {
       this._operationSequences,
       this._writesSinceVerification,
       this._pendingGateBlocks,
+      this._writesAtQualityReview,
+      this._filesAtQualityReview,
     ];
     for (const map of maps) {
       if (map.size > limit) {
@@ -277,18 +279,49 @@ export class SessionStateStore {
 
   recordQualityReview(sessionKey: string): void {
     this._qualityReviewTs.set(sessionKey, Date.now());
+    // Snapshot the current write count — Gate 8 cooldown uses this
+    this._writesAtQualityReview.set(
+      sessionKey,
+      this._writesSinceVerification.get(sessionKey) ?? 0
+    );
+    // Also snapshot modified file count for grace period calculation
+    try {
+      const snapshot = this.getSnapshot(sessionKey);
+      this._filesAtQualityReview.set(sessionKey, snapshot?.modifiedFiles.length ?? 0);
+    } catch {
+      this._filesAtQualityReview.set(sessionKey, 0);
+    }
   }
+
+  // Track file count at last quality review for cooldown
+  private _writesAtQualityReview = new Map<string, number>();
+  private _filesAtQualityReview = new Map<string, number>();
 
   /** Invalidate quality review — called from addModifiedFile on every file change. */
   invalidateQualityReview(sessionKey: string): void {
     this._lastModificationTs.set(sessionKey, Date.now());
   }
 
+  /** Check if quality review is still valid.
+   *  Cooldown: after a quality review, at least 4 NEW files must be modified
+   *  before Gate 8 can trigger again. This prevents "review → write 1 file → blocked again" spam. */
   hasQualityReview(sessionKey: string): boolean {
     const reviewTs = this._qualityReviewTs.get(sessionKey);
     if (!reviewTs) return false;
+
+    // Grace period: allow up to 4 new file modifications after review
+    const filesAtReview = this._filesAtQualityReview.get(sessionKey) ?? 0;
+    try {
+      const snapshot = this.getSnapshot(sessionKey);
+      const currentFiles = snapshot?.modifiedFiles.length ?? 0;
+      const newFilesSinceReview = currentFiles - filesAtReview;
+      // Review is still "valid" (Gate 8 won't trigger) until 4+ new files are modified
+      if (newFilesSinceReview < 4) return true;
+    } catch {
+      // If snapshot fails, fall back to timestamp-based check
+    }
+
     const lastModTs = this._lastModificationTs.get(sessionKey) ?? 0;
-    // Review is valid only if no file was modified AFTER the review
     return lastModTs <= reviewTs;
   }
 
@@ -456,6 +489,8 @@ export class SessionStateStore {
     this._operationSequences.delete(sessionKey);
     this._writesSinceVerification.delete(sessionKey);
     this._pendingGateBlocks.delete(sessionKey);
+    this._writesAtQualityReview.delete(sessionKey);
+    this._filesAtQualityReview.delete(sessionKey);
     // Note: _brainstormCache is keyed by planId, not sessionKey — cleared when plan completes
 
     // Prune all in-memory Maps to prevent unbounded growth across many sessions
