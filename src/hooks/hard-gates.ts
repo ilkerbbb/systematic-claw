@@ -11,8 +11,8 @@
  */
 import type { SessionStateStore } from "../store/session-state.js";
 import type { AuditLog } from "../store/audit-log.js";
-import { isFileWriteTool } from "./tool-verify.js";
-import { extractFilePath } from "../tools/common.js";
+import { isFileWriteTool, isShellTool, extractCommand, detectShellFileWrites } from "./tool-verify.js";
+import { extractFilePath, RELATED_FILE_RULES, isExcludedFromRelatedFileRules } from "../tools/common.js";
 
 export type GateMode = "warn" | "block";
 
@@ -224,6 +224,63 @@ export function handleBeforeToolCall(deps: {
             deps.store.recordGateWarn(sessionKey, "quality_before_complete");
           } else {
             deps.store.recordGatePass(sessionKey, "quality_before_complete");
+          }
+
+          // Gate 3c: Related file propagation enforcement
+          // When completing a plan, check if RELATED_FILE_RULES targets were updated.
+          // This makes the prompt-level warning into a hard block.
+          if (hasModifications && snapshot) {
+            const relevantFiles = snapshot.modifiedFiles.filter(f => !isExcludedFromRelatedFileRules(f));
+            const missingUpdates: string[] = [];
+            const checkedRequired = new Set<string>();
+
+            for (const modifiedFile of relevantFiles) {
+              for (const rule of RELATED_FILE_RULES) {
+                if (rule.pattern.test(modifiedFile)) {
+                  for (const required of rule.requires) {
+                    if (checkedRequired.has(required)) continue;
+                    checkedRequired.add(required);
+                    const wasUpdated = snapshot.modifiedFiles.some(f =>
+                      f.endsWith(required) || f.includes(required)
+                    );
+                    if (!wasUpdated) {
+                      missingUpdates.push(required);
+                    }
+                  }
+                }
+              }
+            }
+
+            if (missingUpdates.length > 0) {
+              const message =
+                `İlişkili dosyalar güncellenmeden plan tamamlanamaz. ` +
+                `Eksik güncelleme: ${missingUpdates.join(", ")}. ` +
+                `Demir Kural #2: "Etki listesindeki HER dosya güncellenip commit edilmeden tamamlandı deme."`;
+
+              deps.auditLog.record({
+                sessionKey,
+                agentId: deps.agentId,
+                eventType: deps.gateMode === "block" ? "gate_blocked" : "gate_warned",
+                severity: "high",
+                message,
+                details: {
+                  gate: "related_file_propagation",
+                  tool: event.toolName,
+                  action,
+                  missingUpdates,
+                  modifiedFiles: relevantFiles,
+                  mode: deps.gateMode,
+                },
+              });
+
+              if (deps.gateMode === "block") {
+                deps.store.recordGateBlock(sessionKey, "related_file_propagation");
+                return blockAndMark(`🛑 ${message}`);
+              }
+              deps.store.recordGateWarn(sessionKey, "related_file_propagation");
+            } else {
+              deps.store.recordGatePass(sessionKey, "related_file_propagation");
+            }
           }
         }
       }
@@ -646,6 +703,98 @@ export function handleBeforeToolCall(deps: {
               deps.store.recordGateWarn(sessionKey, "skill_read_before_write");
             } else {
               deps.store.recordGatePass(sessionKey, "skill_read_before_write");
+            }
+          }
+        }
+      }
+
+      // ── GATE 11b/13b: Shell write bypass prevention ──────
+      // Gate 11 and 13 only check isFileWriteTool (Edit/Write tools).
+      // Shell commands (echo > file, cat > file, cp, sed -i) bypass those gates.
+      // This gate applies Gate 11 (skill) and Gate 13 (workspace root) rules to shell writes.
+
+      if (isShellTool(event.toolName)) {
+        const shellCmd = extractCommand(event.params);
+        if (shellCmd) {
+          const shellWrittenFiles = detectShellFileWrites(shellCmd);
+          for (const writtenFile of shellWrittenFiles) {
+
+            // Gate 11 check: shell writing to skills/ directory
+            const skillMatch = writtenFile.match(/\/skills\/([^/]+)\//i);
+            if (skillMatch) {
+              const skillName = skillMatch[1];
+              const missingReads: string[] = [];
+
+              if (skillName !== "skill-creator") {
+                const paths = [
+                  "skills/skill-creator/SKILL.md",
+                  `~/.openclaw/workspace/skills/skill-creator/SKILL.md`,
+                  `/Users/ilkerbasaran/.openclaw/workspace/skills/skill-creator/SKILL.md`,
+                ];
+                if (!paths.some(p => deps.store.hasReadFile(sessionKey, p))) {
+                  missingReads.push("skills/skill-creator/SKILL.md");
+                }
+              }
+
+              const skillPaths = [
+                `skills/${skillName}/SKILL.md`,
+                `~/.openclaw/workspace/skills/${skillName}/SKILL.md`,
+                `/Users/ilkerbasaran/.openclaw/workspace/skills/${skillName}/SKILL.md`,
+              ];
+              const isWritingSkillMd = /SKILL\.md$/i.test(writtenFile);
+              if (!skillPaths.some(p => deps.store.hasReadFile(sessionKey, p)) && !isWritingSkillMd) {
+                missingReads.push(`skills/${skillName}/SKILL.md`);
+              }
+
+              if (missingReads.length > 0) {
+                const message =
+                  `Shell üzerinden skill dizinine yazma tespit edildi: ${writtenFile}. ` +
+                  `Eksik: ${missingReads.join(" + ")}. Gate 11 shell bypass engellendi.`;
+
+                deps.auditLog.record({
+                  sessionKey, agentId: deps.agentId,
+                  eventType: deps.gateMode === "block" ? "gate_blocked" : "gate_warned",
+                  severity: "high", message,
+                  details: { gate: "skill_read_shell_bypass", tool: event.toolName, file: writtenFile, missingReads, mode: deps.gateMode },
+                });
+
+                if (deps.gateMode === "block") {
+                  deps.store.recordGateBlock(sessionKey, "skill_read_shell_bypass");
+                  return blockAndMark(`⚠️ ${message}`);
+                }
+                deps.store.recordGateWarn(sessionKey, "skill_read_shell_bypass");
+              }
+            }
+
+            // Gate 13 check: shell writing to workspace root
+            const rootPatterns = [
+              /^~\/\.openclaw\/workspace\/([^/]+)$/,
+              /\/\.openclaw\/workspace\/([^/]+)$/,
+            ];
+            for (const pattern of rootPatterns) {
+              const rootMatch = writtenFile.match(pattern);
+              if (rootMatch) {
+                const fileName = rootMatch[1];
+                if (!/\.md$/i.test(fileName)) {
+                  const message =
+                    `Shell üzerinden workspace root'a non-MD dosya yazımı tespit edildi: ${fileName}. ` +
+                    `Gate 13 shell bypass engellendi. Doğru yer: scripts/, temp/`;
+
+                  deps.auditLog.record({
+                    sessionKey, agentId: deps.agentId,
+                    eventType: deps.gateMode === "block" ? "gate_blocked" : "gate_warned",
+                    severity: "medium", message,
+                    details: { gate: "root_hygiene_shell_bypass", tool: event.toolName, file: writtenFile, mode: deps.gateMode },
+                  });
+
+                  if (deps.gateMode === "block") {
+                    deps.store.recordGateBlock(sessionKey, "root_hygiene_shell_bypass");
+                    return blockAndMark(`⚠️ ${message}`);
+                  }
+                  deps.store.recordGateWarn(sessionKey, "root_hygiene_shell_bypass");
+                }
+                break;
+              }
             }
           }
         }

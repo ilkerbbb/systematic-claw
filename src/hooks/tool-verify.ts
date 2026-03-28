@@ -105,7 +105,7 @@ function classifyOperation(toolName: string, params: Record<string, unknown>): s
   return "other";
 }
 
-function extractCommand(params: Record<string, unknown>): string | null {
+export function extractCommand(params: Record<string, unknown>): string | null {
   const candidates = ["command", "cmd", "input", "script", "code"];
   for (const key of candidates) {
     const value = params[key];
@@ -143,7 +143,7 @@ const SHELL_WRITE_PATTERNS: Array<{ pattern: RegExp; fileGroup: number }> = [
   { pattern: /\bcat\s*>\s*["']?([^\s"'|;&<]+)["']?/g, fileGroup: 1 },
 ];
 
-function detectShellFileWrites(command: string): string[] {
+export function detectShellFileWrites(command: string): string[] {
   const files: string[] = [];
   const seen = new Set<string>();
 

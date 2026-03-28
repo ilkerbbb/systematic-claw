@@ -1229,7 +1229,13 @@ function flattenTasksForRestore(tasks: Task[]): Array<{ id: string; status: Task
 
 /** Normalize file path for consistent comparison (resolve + lowercase on macOS). */
 function normalizePath(filePath: string): string {
-  const resolved = resolve(filePath);
+  // Expand ~ to HOME directory before resolving
+  let expanded = filePath;
+  if (expanded.startsWith("~/")) {
+    const home = process.env.HOME || process.env.USERPROFILE || "/tmp";
+    expanded = home + expanded.slice(1);
+  }
+  const resolved = resolve(expanded);
   // macOS has case-insensitive filesystem by default
   if (process.platform === "darwin") {
     return resolved.toLowerCase();
