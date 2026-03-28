@@ -27,6 +27,7 @@ import { createPlanModeTool } from "./src/tools/plan-mode.js";
 import { createDebugTrackerTool } from "./src/tools/debug-tracker.js";
 import { createQualityChecklistTool } from "./src/tools/quality-checklist.js";
 import { loadDependencyMap } from "./src/tools/common.js";
+import { runScaffold, buildOnboardingMessage } from "./src/scaffold.js";
 
 // ─── Default Dangerous Commands ──────────────────────────────
 // Patterns for irreversible commands that should be hard-blocked.
@@ -77,6 +78,8 @@ type SystematicConfig = {
   propagationEnabled: boolean;          // Enable dependency propagation checking
   dependencyMapPath: string | null;     // Path to dependency map JSON (null = use RELATED_FILE_RULES only)
   gateVerbosity: GateVerbosity;         // Gate annotation visibility: silent (off), summary (1-line), verbose (per-gate)
+  workspaceRoot: string;                // Workspace root path (default: ~/.openclaw/workspace)
+  scaffoldOnFirstRun: boolean;          // Create template files on first run (default: true)
 };
 
 function resolveConfig(
@@ -104,6 +107,10 @@ function resolveConfig(
     dependencyMapPath: typeof r.dependencyMapPath === "string" ? r.dependencyMapPath : null,
     gateVerbosity: (r.gateVerbosity === "silent" || r.gateVerbosity === "summary" || r.gateVerbosity === "verbose")
       ? r.gateVerbosity : "summary",
+    workspaceRoot: typeof r.workspaceRoot === "string"
+      ? r.workspaceRoot
+      : join(process.env.HOME || process.env.USERPROFILE || "/tmp", ".openclaw", "workspace"),
+    scaffoldOnFirstRun: r.scaffoldOnFirstRun !== false, // on by default
   };
 }
 
@@ -210,6 +217,24 @@ const systematicPlugin = {
     const store = new SessionStateStore(db);
     const auditLog = new AuditLog(db);
 
+
+    // ── Scaffold: First-run workspace setup ──────────
+    let scaffoldResult: import("./src/scaffold.js").ScaffoldResult | null = null;
+    if (resolved.scaffoldOnFirstRun) {
+      try {
+        scaffoldResult = runScaffold(resolved.workspaceRoot);
+        if (scaffoldResult.isFirstRun) {
+          api.logger.info(
+            `[systematic-claw] Scaffold: created ${scaffoldResult.created.length} files ` +
+            `(${scaffoldResult.created.join(", ")})`
+          );
+        }
+      } catch (err) {
+        api.logger.warn(
+          `[systematic-claw] Scaffold failed (non-critical): ${err instanceof Error ? err.message : err}`
+        );
+      }
+    }
     // Load user-defined dependency map (if configured)
     const dependencyMap = resolved.propagationEnabled
       ? loadDependencyMap(resolved.dependencyMapPath)
@@ -219,6 +244,13 @@ const systematicPlugin = {
 
     api.on("before_prompt_build", async (event, ctx) => {
       try {
+        // Generate onboarding message once on first prompt after scaffold
+        let onboardingMsg: string | undefined;
+        if (scaffoldResult?.isFirstRun) {
+          onboardingMsg = buildOnboardingMessage(scaffoldResult);
+          scaffoldResult = null; // Show only once
+        }
+
         const result = buildPromptContext({
           prompt: event.prompt,
           sessionStore: store,
@@ -226,6 +258,7 @@ const systematicPlugin = {
           sessionKey: ctx.sessionKey,
           workflowDetectionEnabled: resolved.workflowDetectionEnabled,
           gateVerbosity: resolved.gateVerbosity,
+          onboardingMessage: onboardingMsg,
         });
         return result;
       } catch (error) {

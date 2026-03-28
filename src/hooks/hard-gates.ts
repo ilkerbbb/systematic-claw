@@ -14,6 +14,10 @@ import type { AuditLog } from "../store/audit-log.js";
 import { isFileWriteTool, isShellTool, extractCommand, detectShellFileWrites } from "./tool-verify.js";
 import { extractFilePath, RELATED_FILE_RULES, isExcludedFromRelatedFileRules } from "../tools/common.js";
 
+/** Resolved HOME directory — avoids hardcoded user paths. */
+const HOME = process.env.HOME || process.env.USERPROFILE || "/tmp";
+const WORKSPACE_PREFIX = `${HOME}/.openclaw/workspace`;
+
 export type GateMode = "warn" | "block";
 
 // Tools that edit existing files (not create new ones)
@@ -656,7 +660,7 @@ export function handleBeforeToolCall(deps: {
               const skillCreatorPath = "skills/skill-creator/SKILL.md";
               const hasCreatorRead = deps.store.hasReadFile(sessionKey, skillCreatorPath) ||
                 deps.store.hasReadFile(sessionKey, `~/.openclaw/workspace/${skillCreatorPath}`) ||
-                deps.store.hasReadFile(sessionKey, `/Users/ilkerbasaran/.openclaw/workspace/${skillCreatorPath}`);
+                deps.store.hasReadFile(sessionKey, `${WORKSPACE_PREFIX}/${skillCreatorPath}`);
               if (!hasCreatorRead) {
                 missingReads.push("skills/skill-creator/SKILL.md (skill yazma prosedürü)");
               }
@@ -666,7 +670,7 @@ export function handleBeforeToolCall(deps: {
             const skillMdPath = `skills/${skillName}/SKILL.md`;
             const hasSkillRead = deps.store.hasReadFile(sessionKey, skillMdPath) ||
               deps.store.hasReadFile(sessionKey, `~/.openclaw/workspace/${skillMdPath}`) ||
-              deps.store.hasReadFile(sessionKey, `/Users/ilkerbasaran/.openclaw/workspace/${skillMdPath}`);
+              deps.store.hasReadFile(sessionKey, `${WORKSPACE_PREFIX}/${skillMdPath}`);
 
             // Only require skill's own SKILL.md if it's not the SKILL.md itself being written
             const isWritingSkillMd = /SKILL\.md$/i.test(filePath);
@@ -729,7 +733,7 @@ export function handleBeforeToolCall(deps: {
                 const paths = [
                   "skills/skill-creator/SKILL.md",
                   `~/.openclaw/workspace/skills/skill-creator/SKILL.md`,
-                  `/Users/ilkerbasaran/.openclaw/workspace/skills/skill-creator/SKILL.md`,
+                  `${WORKSPACE_PREFIX}/skills/skill-creator/SKILL.md`,
                 ];
                 if (!paths.some(p => deps.store.hasReadFile(sessionKey, p))) {
                   missingReads.push("skills/skill-creator/SKILL.md");
@@ -739,7 +743,7 @@ export function handleBeforeToolCall(deps: {
               const skillPaths = [
                 `skills/${skillName}/SKILL.md`,
                 `~/.openclaw/workspace/skills/${skillName}/SKILL.md`,
-                `/Users/ilkerbasaran/.openclaw/workspace/skills/${skillName}/SKILL.md`,
+                `${WORKSPACE_PREFIX}/skills/${skillName}/SKILL.md`,
               ];
               const isWritingSkillMd = /SKILL\.md$/i.test(writtenFile);
               if (!skillPaths.some(p => deps.store.hasReadFile(sessionKey, p)) && !isWritingSkillMd) {

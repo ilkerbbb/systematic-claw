@@ -149,6 +149,7 @@ export function buildPromptContext(params: {
   sessionKey?: string;
   workflowDetectionEnabled: boolean;
   gateVerbosity?: GateVerbosity;
+  onboardingMessage?: string;
 }): { prependSystemContext: string; prependContext?: string } {
   const parts: string[] = [];
   const sessionKey = params.sessionKey ?? "default";
@@ -191,6 +192,12 @@ export function buildPromptContext(params: {
     } catch (err) {
       console.warn("[systematic-claw] cross-session summary error:", err instanceof Error ? err.message : err);
     }
+  }
+
+
+  // 0b. Onboarding message (first run only)
+  if (params.onboardingMessage) {
+    parts.push(params.onboardingMessage);
   }
 
   // 1. Workflow detection and guidance (State Machine)

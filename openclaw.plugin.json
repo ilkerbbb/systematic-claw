@@ -37,6 +37,14 @@
     "gateVerbosity": {
       "label": "Gate Visibility",
       "help": "How gate activity is shown to the agent: 'silent' (off), 'summary' (single line), 'verbose' (per-gate breakdown)"
+    },
+    "workspaceRoot": {
+      "label": "Workspace Root",
+      "help": "Path to your workspace directory. Default: ~/.openclaw/workspace"
+    },
+    "scaffoldOnFirstRun": {
+      "label": "Scaffold on First Run",
+      "help": "Create template files (STATE.md, MEMORY.md, SSOT_REGISTRY.md) if they don't exist on first plugin load"
     }
   },
   "configSchema": {
@@ -99,6 +107,15 @@
         "enum": ["silent", "summary", "verbose"],
         "default": "summary",
         "description": "Gate annotation visibility: silent (off), summary (1-line status), verbose (per-gate breakdown)"
+      },
+      "workspaceRoot": {
+        "type": "string",
+        "description": "Workspace root directory path. Default: ~/.openclaw/workspace. Gates that check workspace files (STATE.md, MEMORY.md, etc.) use this as the base path."
+      },
+      "scaffoldOnFirstRun": {
+        "type": "boolean",
+        "default": true,
+        "description": "Create template workspace files (STATE.md, MEMORY.md, SYSTEM/SSOT_REGISTRY.md) on first run if they don't exist. Includes onboarding guidance in first session."
       }
     }
   }
