@@ -249,6 +249,12 @@ export function handleAfterToolCall(deps: {
         if (isMemoryFile(filePath)) {
           deps.store.setMemoryWritten(sessionKey);
         }
+
+        // Clear SSOT read flag after workspace file write — forces re-read before next write.
+        // This ensures every write is preceded by SSoT awareness, not just the first one.
+        if (filePath.includes("/.openclaw/workspace/") || filePath.startsWith("~/.openclaw/workspace/")) {
+          deps.store.clearSsotRegistryRead(sessionKey);
+        }
       }
 
       // Track search/grep tools for impact analysis detection

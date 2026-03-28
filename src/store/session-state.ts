@@ -295,9 +295,14 @@ export class SessionStateStore {
     this._ssotRegistryRead.set(sessionKey, true);
   }
 
-  /** Check if SSOT_REGISTRY.md was read in this session. */
+  /** Check if SSOT_REGISTRY.md was read in this session (since last write). */
   hasSsotRegistryRead(sessionKey: string): boolean {
     return this._ssotRegistryRead.get(sessionKey) === true;
+  }
+
+  /** Clear SSOT read flag after a workspace write — forces re-read before next write. */
+  clearSsotRegistryRead(sessionKey: string): void {
+    this._ssotRegistryRead.set(sessionKey, false);
   }
 
   /** Track operation type for pattern detection. */
