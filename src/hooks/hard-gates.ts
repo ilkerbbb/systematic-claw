@@ -93,9 +93,15 @@ export function handleBeforeToolCall(deps: {
             });
 
             if (deps.gateMode === "block") {
+              deps.store.recordGateBlock(sessionKey, "read_before_edit");
               return blockAndMark(`⚠️ ${message}`);
             }
+            deps.store.recordGateWarn(sessionKey, "read_before_edit");
+          } else {
+            deps.store.recordGatePass(sessionKey, "read_before_edit");
           }
+        } else if (filePath) {
+          deps.store.recordGatePass(sessionKey, "read_before_edit");
         }
       }
 
@@ -134,9 +140,15 @@ export function handleBeforeToolCall(deps: {
             });
 
             if (deps.gateMode === "block") {
+              deps.store.recordGateBlock(sessionKey, "plan_before_create");
               return blockAndMark(`⚠️ ${message}`);
             }
+            deps.store.recordGateWarn(sessionKey, "plan_before_create");
+          } else {
+            deps.store.recordGatePass(sessionKey, "plan_before_create");
           }
+        } else {
+          deps.store.recordGatePass(sessionKey, "plan_before_create");
         }
       }
       // ── GATE 3: Verify before complete ─────────────
@@ -174,8 +186,12 @@ export function handleBeforeToolCall(deps: {
             });
 
             if (deps.gateMode === "block") {
+              deps.store.recordGateBlock(sessionKey, "verify_before_complete");
               return blockAndMark(`⚠️ ${message}`);
             }
+            deps.store.recordGateWarn(sessionKey, "verify_before_complete");
+          } else {
+            deps.store.recordGatePass(sessionKey, "verify_before_complete");
           }
         }
       }
@@ -213,8 +229,10 @@ export function handleBeforeToolCall(deps: {
           });
 
           if (deps.gateMode === "block") {
+            deps.store.recordGateBlock(sessionKey, "doom_loop");
             return blockAndMark(message);
           }
+          deps.store.recordGateWarn(sessionKey, "doom_loop");
         }
       }
       // ── GATE 5: Dangerous command block ──────────────
@@ -246,6 +264,7 @@ export function handleBeforeToolCall(deps: {
                 });
 
                 // ALWAYS block dangerous commands — ignores gateMode
+                deps.store.recordGateBlock(sessionKey, "dangerous_command");
                 return blockAndMark(message);
               }
             } catch (regexErr) {
@@ -308,6 +327,7 @@ export function handleBeforeToolCall(deps: {
                 details: { gate: "bootstrap_size", file: filePath, sizeKB: estimatedSizeKB, limitKB: blockKB },
               });
 
+              deps.store.recordGateBlock(sessionKey, "bootstrap_size");
               return blockAndMark(message);
             }
 
@@ -324,6 +344,9 @@ export function handleBeforeToolCall(deps: {
                 message,
                 details: { gate: "bootstrap_size", file: filePath, sizeKB: estimatedSizeKB, warnKB, blockKB },
               });
+              deps.store.recordGateWarn(sessionKey, "bootstrap_size");
+            } else {
+              deps.store.recordGatePass(sessionKey, "bootstrap_size");
             }
           }
         }
@@ -361,6 +384,7 @@ export function handleBeforeToolCall(deps: {
             },
           });
 
+          deps.store.recordGateBlock(sessionKey, "verify_first");
           return blockAndMark(message);
 
         } else if (writes >= 4) {
@@ -379,6 +403,9 @@ export function handleBeforeToolCall(deps: {
               blockThreshold: 8,
             },
           });
+          deps.store.recordGateWarn(sessionKey, "verify_first");
+        } else {
+          deps.store.recordGatePass(sessionKey, "verify_first");
         }
       }
 
@@ -425,6 +452,7 @@ export function handleBeforeToolCall(deps: {
               },
             });
 
+            deps.store.recordGateBlock(sessionKey, "complexity_review");
             return blockAndMark(message);
           }
         }

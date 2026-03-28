@@ -18,7 +18,7 @@ import { getConnection, closeConnection } from "./src/store/connection.js";
 import { migrateDatabase } from "./src/store/schema.js";
 import { SessionStateStore } from "./src/store/session-state.js";
 import { AuditLog } from "./src/store/audit-log.js";
-import { buildPromptContext } from "./src/hooks/prompt-inject.js";
+import { buildPromptContext, type GateVerbosity } from "./src/hooks/prompt-inject.js";
 import { handleAfterToolCall } from "./src/hooks/tool-verify.js";
 import { handleBeforeToolCall, type GateMode } from "./src/hooks/hard-gates.js";
 import { handleAgentEnd } from "./src/hooks/completion-check.js";
@@ -74,6 +74,7 @@ type SystematicConfig = {
   bootstrapSizeBlockKB: number;         // Block when bootstrap file exceeds this size (KB)
   propagationEnabled: boolean;          // Enable dependency propagation checking
   dependencyMapPath: string | null;     // Path to dependency map JSON (null = use RELATED_FILE_RULES only)
+  gateVerbosity: GateVerbosity;         // Gate annotation visibility: silent (off), summary (1-line), verbose (per-gate)
 };
 
 function resolveConfig(
@@ -99,6 +100,8 @@ function resolveConfig(
     bootstrapSizeBlockKB: typeof r.bootstrapSizeBlockKB === "number" ? r.bootstrapSizeBlockKB : 35,
     propagationEnabled: r.propagationEnabled !== false,
     dependencyMapPath: typeof r.dependencyMapPath === "string" ? r.dependencyMapPath : null,
+    gateVerbosity: (r.gateVerbosity === "silent" || r.gateVerbosity === "summary" || r.gateVerbosity === "verbose")
+      ? r.gateVerbosity : "summary",
   };
 }
 
@@ -220,6 +223,7 @@ const systematicPlugin = {
           auditLog,
           sessionKey: ctx.sessionKey,
           workflowDetectionEnabled: resolved.workflowDetectionEnabled,
+          gateVerbosity: resolved.gateVerbosity,
         });
         return result;
       } catch (error) {

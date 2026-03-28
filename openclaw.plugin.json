@@ -33,6 +33,10 @@
     "dbPath": {
       "label": "Database Path",
       "help": "Path to SQLite database for session state and audit logs"
+    },
+    "gateVerbosity": {
+      "label": "Gate Visibility",
+      "help": "How gate activity is shown to the agent: 'silent' (off), 'summary' (single line), 'verbose' (per-gate breakdown)"
     }
   },
   "configSchema": {
@@ -89,6 +93,12 @@
       "dependencyMapPath": {
         "type": "string",
         "description": "Path to dependency map JSON for propagation checking"
+      },
+      "gateVerbosity": {
+        "type": "string",
+        "enum": ["silent", "summary", "verbose"],
+        "default": "summary",
+        "description": "Gate annotation visibility: silent (off), summary (1-line status), verbose (per-gate breakdown)"
       }
     }
   }

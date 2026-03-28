@@ -104,6 +104,22 @@ export type DoomLoopResult = {
   count?: number;
 };
 
+// ─── Gate Activity Tracking Types ─────────────────────────────
+// Tracks gate checks, blocks, and warns per session for visibility annotations.
+
+export type GateActivityEntry = {
+  checks: number;
+  blocks: number;
+  warns: number;
+};
+
+export type GateActivitySnapshot = {
+  gates: Record<string, GateActivityEntry>;
+  totalChecks: number;
+  totalBlocks: number;
+  totalWarns: number;
+};
+
 export class SessionStateStore {
   // In-memory verification tracking — doesn't need to persist across gateway restarts
   private _verifications = new Map<string, number>();
@@ -112,6 +128,60 @@ export class SessionStateStore {
   private static readonly MAX_CALL_HISTORY = 20;
   // Maximum number of sessions to track in-memory before pruning oldest
   private static readonly MAX_TRACKED_SESSIONS = 50;
+
+  // ── Gate Activity Tracking (in-memory) ─────────
+  // Accumulates gate check/block/warn counts per session.
+  // Used by prompt-inject to render gate visibility annotations.
+  private _gateActivity = new Map<string, Record<string, GateActivityEntry>>();
+
+  /** Record a gate check that PASSED (tool call allowed through). */
+  recordGatePass(sessionKey: string, gateName: string): void {
+    const activity = this._ensureGateActivity(sessionKey);
+    const entry = activity[gateName] ?? (activity[gateName] = { checks: 0, blocks: 0, warns: 0 });
+    entry.checks++;
+  }
+
+  /** Record a gate BLOCK (tool call prevented). */
+  recordGateBlock(sessionKey: string, gateName: string): void {
+    const activity = this._ensureGateActivity(sessionKey);
+    const entry = activity[gateName] ?? (activity[gateName] = { checks: 0, blocks: 0, warns: 0 });
+    entry.checks++;
+    entry.blocks++;
+  }
+
+  /** Record a gate WARN (tool call allowed but warning logged). */
+  recordGateWarn(sessionKey: string, gateName: string): void {
+    const activity = this._ensureGateActivity(sessionKey);
+    const entry = activity[gateName] ?? (activity[gateName] = { checks: 0, blocks: 0, warns: 0 });
+    entry.checks++;
+    entry.warns++;
+  }
+
+  /** Get aggregated gate activity snapshot for a session. */
+  getGateActivity(sessionKey: string): GateActivitySnapshot {
+    const activity = this._gateActivity.get(sessionKey) ?? {};
+    let totalChecks = 0, totalBlocks = 0, totalWarns = 0;
+    for (const entry of Object.values(activity)) {
+      totalChecks += entry.checks;
+      totalBlocks += entry.blocks;
+      totalWarns += entry.warns;
+    }
+    return { gates: { ...activity }, totalChecks, totalBlocks, totalWarns };
+  }
+
+  /** Reset gate activity (called on session reset). */
+  resetGateActivity(sessionKey: string): void {
+    this._gateActivity.delete(sessionKey);
+  }
+
+  private _ensureGateActivity(sessionKey: string): Record<string, GateActivityEntry> {
+    let activity = this._gateActivity.get(sessionKey);
+    if (!activity) {
+      activity = {};
+      this._gateActivity.set(sessionKey, activity);
+    }
+    return activity;
+  }
 
   // Gate block tracking: when before_tool_call blocks a call, after_tool_call
   // should skip all file tracking (addModifiedFile etc.) to prevent counter inflation.
@@ -155,6 +225,7 @@ export class SessionStateStore {
       this._filesAtQualityReview,
       this._lastSearchTs,
       this._lastGitCommandTs,
+      this._gateActivity,
     ];
     for (const map of maps) {
       if (map.size > limit) {
@@ -554,6 +625,7 @@ export class SessionStateStore {
     this._filesAtQualityReview.delete(sessionKey);
     this._lastSearchTs.delete(sessionKey);
     this._lastGitCommandTs.delete(sessionKey);
+    this._gateActivity.delete(sessionKey);
     // Note: _brainstormCache is keyed by planId, not sessionKey — cleared when plan completes
 
     // Prune all in-memory Maps to prevent unbounded growth across many sessions

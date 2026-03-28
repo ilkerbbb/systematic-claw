@@ -136,12 +136,15 @@ SKILL FARKINDALIK:
 
 // ─── Build Context Function ──────────────────────────────────
 
+export type GateVerbosity = "silent" | "summary" | "verbose";
+
 export function buildPromptContext(params: {
   prompt: string;
   sessionStore: SessionStateStore;
   auditLog?: AuditLog;
   sessionKey?: string;
   workflowDetectionEnabled: boolean;
+  gateVerbosity?: GateVerbosity;
 }): { prependSystemContext: string; prependContext?: string } {
   const parts: string[] = [];
   const sessionKey = params.sessionKey ?? "default";
@@ -284,7 +287,31 @@ export function buildPromptContext(params: {
     }
   }
 
-  // 4. GATE 4: Periodic warnings — missing updates, no memory, stale state
+    // 3b. Gate Activity Status (verbosity-dependent)
+    if (params.sessionKey && params.gateVerbosity && params.gateVerbosity !== "silent") {
+      try {
+        const activity = params.sessionStore.getGateActivity(params.sessionKey);
+        if (activity.totalChecks > 0) {
+          if (params.gateVerbosity === "verbose") {
+            // Verbose: show per-gate breakdown
+            const gateLines: string[] = [];
+            for (const [gateName, entry] of Object.entries(activity.gates)) {
+              const status = entry.blocks > 0 ? "🔴" : entry.warns > 0 ? "🟡" : "✅";
+              gateLines.push(`  ${status} ${gateName}: ${entry.checks} check, ${entry.blocks} block, ${entry.warns} warn`);
+            }
+            parts.push(`## 🛡️ Gate Status\n${gateLines.join("\n")}\nToplam: ${activity.totalChecks} kontrol, ${activity.totalBlocks} engel, ${activity.totalWarns} uyarı`);
+          } else {
+            // Summary: single line
+            const emoji = activity.totalBlocks > 0 ? "🔴" : activity.totalWarns > 0 ? "🟡" : "✅";
+            parts.push(`${emoji} Gates: ${activity.totalChecks} kontrol, ${activity.totalBlocks} engel, ${activity.totalWarns} uyarı`);
+          }
+        }
+      } catch (err) {
+        console.warn("[systematic-claw] gate activity injection error:", err instanceof Error ? err.message : err);
+      }
+    }
+
+    // 4. GATE 4: Periodic warnings — missing updates, no memory, stale state
   if (params.sessionKey) {
     try {
       const warnings = buildPeriodicWarnings(params.sessionStore, params.sessionKey);
