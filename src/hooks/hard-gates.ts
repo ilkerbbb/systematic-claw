@@ -602,6 +602,49 @@ export function handleBeforeToolCall(deps: {
         }
       }
 
+      // ── GATE 9c: SSoT awareness on workspace file writes ──
+      // When writing to a workspace file (not temp/extensions/node_modules),
+      // SSOT_REGISTRY.md must have been read at least once this session.
+      // This ensures the agent knows which files are canonical sources
+      // before making ad-hoc changes outside of a plan.
+      // One-time gate: once SSOT is read, all subsequent writes pass.
+      if (isFileWriteTool(event.toolName)) {
+        const filePath = extractFilePath(event.params);
+        if (filePath) {
+          const isWorkspaceFile =
+            (filePath.includes("/.openclaw/workspace/") || filePath.startsWith("~/.openclaw/workspace/")) &&
+            !isExcludedFromRelatedFileRules(filePath);
+          if (isWorkspaceFile && !deps.store.hasSsotRegistryRead(sessionKey)) {
+            const message =
+              `Workspace dosyasına yazmadan önce SSoT haritasını oku. ` +
+              `SYSTEM/SSOT_REGISTRY.md → hangi dosya neyin tek kaynağı, etki alanı ne. ` +
+              `Session'da bir kez okuman yeterli, sonraki yazımlar serbest.`;
+
+            deps.auditLog.record({
+              sessionKey,
+              agentId: deps.agentId,
+              eventType: deps.gateMode === "block" ? "gate_blocked" : "gate_warned",
+              severity: "medium",
+              message,
+              details: {
+                gate: "ssot_write_awareness",
+                tool: event.toolName,
+                filePath,
+                mode: deps.gateMode,
+              },
+            });
+
+            if (deps.gateMode === "block") {
+              deps.store.recordGateBlock(sessionKey, "ssot_write_awareness");
+              return blockAndMark(`⚠️ ${message}`);
+            }
+            deps.store.recordGateWarn(sessionKey, "ssot_write_awareness");
+          } else if (isWorkspaceFile) {
+            deps.store.recordGatePass(sessionKey, "ssot_write_awareness");
+          }
+        }
+      }
+
       // ── GATE 10: memory_search before agent dispatch ──
       // When sending tasks to agent sessions (sessions_send with agent:* sessionKey),
       // memory_search (or lcm_grep/lcm_expand_query) must have been called first.
