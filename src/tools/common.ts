@@ -75,6 +75,8 @@ const RELATED_FILE_EXCLUDE_PATTERNS = [
   /\/\.cache\//i,
   /\/dist\//i,
   /\/build\//i,
+  /\/\.openclaw\/extensions\//i,  // Plugin source code — not workspace files
+  /\/\.openclaw\/plugins\//i,     // Installed plugins
 ];
 
 /** Check if a file path is in a temporary/excluded location. */
