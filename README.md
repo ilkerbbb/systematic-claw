@@ -1,59 +1,21 @@
 # systematic-claw
 
-**Systematic thinking enforcement plugin for [OpenClaw](https://openclaw.ai).**
+**Structural discipline plugin for [OpenClaw](https://openclaw.ai) agents.**
 
-Brings Claude Code's structured methodology — task tracking, plan mode, hard gates, quality checklists, and audit logging — to any OpenClaw agent.
+Agents are powerful but undisciplined. They skip verification, forget to update docs, edit files they haven't read, and declare "done" prematurely. This plugin enforces discipline through hard gates, workflow tools, and audit logging — without requiring the agent to *want* to be disciplined.
 
-> Agents are powerful but undisciplined. They skip verification, forget to update docs, and declare "done" prematurely. This plugin adds structural discipline without requiring strategic thinking.
+> 7,200 lines of TypeScript. 15 hard gates. 4 workflow tools. Zero config required.
 
-## What It Does
-
-```
-Layer 1 (GUIDE)    → Workflow detection + context injection into every prompt
-Layer 2 (ENFORCE)  → Hard gates that block unsafe/incomplete actions
-Layer 3 (AUDIT)    → File tracking, completion checks, quality reviews
-```
-
-### Tools (4)
-
-| Tool | Purpose |
-|------|---------|
-| `task_tracker` | Hierarchical task management with checkpoint/rollback |
-| `plan_mode` | Plan → approve → execute → verify workflow |
-| `debug_tracker` | 4-phase systematic debugging (evidence → hypothesize → test → resolve) |
-| `quality_checklist` | Self-review before completion — verification, edge cases, regression, gaps |
-
-### Hard Gates (6)
-
-| Gate | What It Blocks |
-|------|---------------|
-| Read-before-Edit | Editing a file you haven't read yet |
-| Plan-before-Create | Creating new files without an active plan |
-| Dangerous Commands | Irreversible operations (social media posts, `rm -rf /`, `terraform destroy`, etc.) |
-| Bootstrap Size | Oversized bootstrap/config files that waste context |
-| Workflow Chain | Completing tasks without verification + related file updates |
-| Quality Review | Ending sessions without self-review when files were modified |
-
-### Hooks (4)
-
-| Event | Action |
-|-------|--------|
-| `before_prompt_build` | Injects workflow guidance, active plan/task state, periodic warnings |
-| `before_tool_call` | Enforces hard gates |
-| `after_tool_call` | Tracks file reads/writes, detects verification commands |
-| `agent_end` | Completion checklist (open tasks, unverified changes, missing memory) |
-
-## Installation
+## Quick Start
 
 ```bash
-# Clone to OpenClaw extensions directory
 cd ~/.openclaw/extensions
 git clone https://github.com/ilkerbbb/systematic-claw.git
 cd systematic-claw
 npm install
 ```
 
-Then add to your `openclaw.json`:
+Add to `openclaw.json`:
 
 ```json
 {
@@ -64,23 +26,157 @@ Then add to your `openclaw.json`:
         "enabled": true
       }
     }
-  }
-}
-```
-
-**Important:** Add `"group:plugins"` to your tool allowlist so plugin tools are visible:
-
-```json
-{
+  },
   "tools": {
     "alsoAllow": ["group:plugins"]
   }
 }
 ```
 
+Restart your gateway. The plugin works out of the box — zero config needed.
+
+**First-run scaffold:** If your workspace is empty, the plugin creates template files (`STATE.md`, `MEMORY.md`, `SYSTEM/SSOT_REGISTRY.md`) and shows an onboarding guide in the first session.
+
+---
+
+## Hard Gates
+
+Gates run on every tool call (`before_tool_call` hook). In `block` mode (default), they actively prevent the action and return an error message. In `warn` mode, they log but allow.
+
+| # | Gate | What It Enforces |
+|---|------|-----------------|
+| 1 | **Read before Edit** | Can't edit a file you haven't read. Prevents blind modifications. |
+| 2 | **Plan before Create** | Creating new files in a "creating" workflow requires an active plan. |
+| 3 | **Verify before Complete** | Can't mark tasks/plans complete without running test/build/lint first. |
+| 3b | **Quality Review on Plan Completion** | `plan_mode verify/complete` requires `quality_checklist` when files were changed. |
+| 3c | **Related Files on Completion** | Plan completion blocked if related files (per RELATED_FILE_RULES) weren't updated. |
+| 4 | **Doom Loop** | 3+ identical tool calls on same file in last 8 calls → redirects to `debug_tracker`. |
+| 5 | **Dangerous Commands** | Blocks irreversible shell commands: `rm -rf`, `git push --force`, social media posts, workspace deletion. Configurable regex list. |
+| 6 | **Bootstrap File Size** | Warns at 28KB, blocks at 35KB for config/bootstrap files. Prevents context waste. |
+| 7 | **Verify-First** | Every 3-4 file writes, a verification command (test/build/lint) must run before more writes. |
+| 8 | **Complexity Review** | 2+ modified files without `quality_checklist` → blocked. Forces self-review on multi-file changes. |
+| 9 | **SSoT Propagation (Plans)** | `plan_mode create` with 4+ steps or existing modifications → must read `SSOT_REGISTRY.md` first. |
+| 9c | **SSoT Awareness (Writes)** | Every workspace file write requires `SSOT_REGISTRY.md` to have been read. Flag resets after each write — continuous enforcement, not one-time. |
+| 10 | **Memory before Dispatch** | `sessions_send` to agent sessions requires prior `memory_search` / `lcm_grep` / `lcm_expand_query`. Prevents dispatching without context. |
+| 11 | **Skill File Read** | Writing to `skills/X/` requires reading both `X/SKILL.md` and `skill-creator/SKILL.md`. Also enforced for shell write operations (11b). |
+| 12 | **Spawn Thinking** | `sessions_spawn` requires a `thinking` parameter. No fire-and-forget sub-agents. |
+| 13 | **Workspace Root Hygiene** | Only `.md` files allowed in workspace root. Other file types → blocked. Also enforced for shell writes (13b). |
+
+### Shell Write Detection
+
+Gates 11b and 13b also catch file writes through shell commands (e.g., `echo "..." > file.md`, `cat > file`, `tee file`). The plugin parses shell command text for redirect operators (`>`, `>>`, `tee`, `cat >`) and applies the same gate logic.
+
+---
+
+## Workflow Tools
+
+Four tools are registered and available to agents:
+
+### `task_tracker`
+
+Hierarchical task management with parent-child relationships.
+
+```
+Actions: create, update, add_subtask, complete, delete, list, checkpoint, rollback
+```
+
+- **Checkpoint/Rollback:** Save task state snapshots before risky work. Up to 10 checkpoints per session.
+- **File tracking:** Tasks can list `files_affected` for traceability.
+- **Verification evidence:** Record *how* you verified a task is complete.
+
+### `plan_mode`
+
+Structured execution plans: create → approve → execute → verify → complete.
+
+```
+Actions: create, approve, advance, complete_step, verify, complete, status, cancel
+```
+
+- **4-Lens Brainstorm** (required for 4+ steps): constraints, impact radius, reversibility, success criteria.
+- **Alternatives** (required for 4+ steps): at least 2 approaches with trade-off analysis.
+- Steps auto-link to `task_tracker` for progress tracking.
+
+### `debug_tracker`
+
+Evidence-based debugging protocol. No fix without a hypothesis.
+
+```
+Phases: start → reproduce → hypothesize → test → resolve/escalate
+```
+
+- Max 3 failed hypotheses → must escalate to user.
+- Each hypothesis needs evidence + test plan.
+- Prevents "try random things until it works" debugging.
+
+### `quality_checklist`
+
+Self-review enforcement before session completion.
+
+```
+Actions: review, status
+```
+
+Five mandatory fields (15+ character minimum, no "N/A"):
+1. **Verification** — What commands did you run?
+2. **Edge Cases** — What did you consider?
+3. **Regression Risk** — What could break?
+4. **Gap Analysis** — What's incomplete?
+5. **Stress Test** — Did you stress-test?
+
+---
+
+## Hooks
+
+| Hook | What It Does |
+|------|-------------|
+| `before_prompt_build` | Injects workflow guidance, active plan/task state, gate visibility summary, periodic warnings, onboarding message (first run) |
+| `before_tool_call` | Runs all 15 hard gates |
+| `after_tool_call` | Tracks file reads/writes, detects verification commands, records memory searches, clears SSoT flags after writes |
+| `agent_end` | Completion checklist: open tasks? unverified changes? missing memory writes? |
+
+### Gate Visibility
+
+Controlled by `gateVerbosity` config:
+
+- **`silent`** — No gate annotations in prompts
+- **`summary`** (default) — Single line: "✅ Gates: N checks, N blocks, N warnings"
+- **`verbose`** — Per-gate breakdown with names and counts
+
+---
+
+## Workflow Detection
+
+The plugin analyzes each prompt to detect the type of work and inject relevant guidance:
+
+| Workflow | Trigger Keywords | Guidance |
+|----------|-----------------|----------|
+| 🔍 Debugging | "error", "bug", "broken" | Use `debug_tracker`, root cause first |
+| 🏗️ Creating | "create", "build", "new" | Plan first, then execute step by step |
+| 📊 Analyzing | "analyze", "review", "report" | Gather data, synthesize, question assumptions |
+| 🔧 Fixing | "fix", "update", "refactor" | Read before edit, update related files |
+
+---
+
+## Related File Rules
+
+When certain files are modified, the plugin warns (or blocks on plan completion) if related files aren't also updated. Built-in rules:
+
+| When You Change... | Also Update... |
+|-------------------|---------------|
+| `STATE.md` | `MEMORY.md` |
+| `MEMORY.md` | `STATE.md` |
+| `SOUL.md`, `AGENTS.md` | `MEMORY.md` |
+| `SKILL.md` | `TOOLS.md` |
+| Files in `skills/` | `TOOLS.md` |
+| Cron configurations | `CRON_INVENTORY.md` |
+
+Rules are scoped to workspace files. Plugin source code (`extensions/`, `plugins/`) is excluded to prevent false positives.
+
+---
+
 ## Configuration
 
-All settings have sensible defaults — the plugin works out of the box with zero config.
+All settings have sensible defaults. Override only what you need:
 
 ```json
 {
@@ -90,6 +186,7 @@ All settings have sensible defaults — the plugin works out of the box with zer
         "enabled": true,
         "config": {
           "gateMode": "block",
+          "gateVerbosity": "summary",
           "taskTrackerEnabled": true,
           "planModeEnabled": true,
           "completionCheckEnabled": true,
@@ -97,6 +194,8 @@ All settings have sensible defaults — the plugin works out of the box with zer
           "debugTrackerEnabled": true,
           "workflowDetectionEnabled": true,
           "propagationEnabled": true,
+          "scaffoldOnFirstRun": true,
+          "workspaceRoot": "~/.openclaw/workspace",
           "dangerousCommands": [],
           "bootstrapSizeWarnKB": 28,
           "bootstrapSizeBlockKB": 35,
@@ -108,30 +207,22 @@ All settings have sensible defaults — the plugin works out of the box with zer
 }
 ```
 
-### Gate Mode
+### Key Options
 
-- **`block`** (default): Hard gates actively prevent the tool call and return an error message
-- **`warn`**: Gates log warnings but allow the action to proceed
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `gateMode` | `"block"` \| `"warn"` | `"block"` | Hard gates block or just warn |
+| `gateVerbosity` | `"silent"` \| `"summary"` \| `"verbose"` | `"summary"` | Gate activity visibility in prompts |
+| `scaffoldOnFirstRun` | boolean | `true` | Create template workspace files on first run |
+| `workspaceRoot` | string | `~/.openclaw/workspace` | Workspace directory for file gates |
+| `dangerousCommands` | string[] | (built-in list) | Additional regex patterns for Gate 5 |
+| `bootstrapSizeWarnKB` | number | 28 | File size warning threshold |
+| `bootstrapSizeBlockKB` | number | 35 | File size block threshold |
+| `dependencyMapPath` | string | null | Custom file dependency map for propagation |
 
-### Dangerous Commands
+### Custom Dependency Map
 
-Override the default list of irreversible command patterns:
-
-```json
-{
-  "dangerousCommands": [
-    "\\bkubectl\\s+delete\\b",
-    "\\bterraform\\s+destroy\\b",
-    "\\bgit\\s+push\\s+.*--force\\b"
-  ]
-}
-```
-
-Patterns are JavaScript regex strings matched against shell command text.
-
-### Dependency Map
-
-For propagation checking (e.g., "you changed `api.ts` — did you update `api.test.ts`?"):
+For project-specific propagation rules:
 
 ```json
 {
@@ -147,109 +238,73 @@ Format:
 }
 ```
 
-## How It Works
+---
 
-### Workflow Detection
+## First-Run Scaffold
 
-The plugin analyzes each prompt to detect the workflow type:
+On first load, if the workspace has no existing files, the plugin creates:
 
-| Workflow | Triggers | Guidance |
-|----------|----------|----------|
-| Debugging | "error", "bug", "broken", "investigate" | Use `debug_tracker`, find root cause first |
-| Creating | "create", "build", "new", "implement" | Plan first with `plan_mode`, then execute |
-| Analyzing | "analyze", "review", "report", "compare" | Gather data, synthesize, question assumptions |
-| Fixing | "fix", "update", "refactor", "improve" | Read before edit, update related files |
-| General | (default) | No specific guidance |
+| File | Purpose |
+|------|---------|
+| `STATE.md` | Track active tasks and project status |
+| `MEMORY.md` | Store decisions, facts, and learnings |
+| `SYSTEM/SSOT_REGISTRY.md` | Map which file is the single source of truth for what |
 
-### Quality Checklist
+An onboarding message explains these files and how gates use them. The scaffold only runs once (tracked via database flag) and skips entirely if any workspace files already exist.
 
-Before completing any session with file modifications, agents must answer:
-
-1. **Verification** — What commands did you run? (test, build, lint)
-2. **Edge Cases** — What edge cases did you consider?
-3. **Regression Risk** — What existing functionality could break?
-4. **Gap Analysis** — What remains incomplete or untested?
-5. **Stress Test** (optional) — Did you stress-test your changes?
-
-Answers must be substantive (15+ characters). "Yes", "Done", "N/A" are rejected.
-
-The system escalates reminders as the session progresses:
-- 10+ tool calls: gentle reminder
-- 25+ tool calls: strong "MANDATORY" warning
-
-### Checkpoint & Rollback
-
-Save task state snapshots and rollback if something goes wrong:
-
-```
-task_tracker(action: "checkpoint", label: "before refactor")
-// ... do risky work ...
-task_tracker(action: "rollback", checkpoint_id: "...")
-```
-
-- Maximum 10 checkpoints per session (oldest auto-pruned)
-- Rollback restores tasks, plan state, and re-creates deleted tasks
-
-### Cross-Session Tracking
-
-- Audit log persists across sessions in SQLite
-- Previous session's issues are injected into the next session's context
-- Session state (modified files, read files) resets cleanly on new sessions
+---
 
 ## Architecture
 
 ```
-index.ts                          Plugin entry point & registration
+index.ts                          Entry point, hook registration, scaffold orchestration
 src/
 ├── hooks/
-│   ├── prompt-inject.ts          Layer 1: workflow detection, context injection
-│   ├── hard-gates.ts             Layer 2: read-before-edit, dangerous commands, etc.
-│   ├── tool-verify.ts            Layer 3: file tracking, verification detection
-│   └── completion-check.ts       Layer 3: end-of-session quality audit
+│   ├── prompt-inject.ts          Layer 1: workflow detection, context + gate visibility injection
+│   ├── hard-gates.ts             Layer 2: 15 hard gates (before_tool_call)
+│   ├── tool-verify.ts            Layer 3: file/search tracking, SSoT flag management (after_tool_call)
+│   └── completion-check.ts       Layer 3: end-of-session quality audit (agent_end)
 ├── tools/
-│   ├── task-tracker.ts           Hierarchical task management + checkpoint/rollback
+│   ├── task-tracker.ts           Hierarchical tasks with checkpoint/rollback
 │   ├── plan-mode.ts              Plan → approve → execute → verify workflow
-│   ├── debug-tracker.ts          4-phase systematic debugging protocol
+│   ├── debug-tracker.ts          4-phase systematic debugging
 │   ├── quality-checklist.ts      Self-review enforcement
-│   └── common.ts                 Shared utilities, dependency map, related file rules
-└── store/
-    ├── session-state.ts          In-memory + SQLite session state management
-    ├── audit-log.ts              Persistent audit trail
-    ├── schema.ts                 Database migrations (v1 → v3)
-    └── connection.ts             SQLite connection pooling
+│   └── common.ts                 Related file rules, dependency map, path utilities
+├── store/
+│   ├── session-state.ts          In-memory + SQLite session state (files, gates, flags)
+│   ├── audit-log.ts              Persistent audit trail
+│   ├── schema.ts                 Database migrations (v1 → v3)
+│   └── connection.ts             SQLite connection pooling
+└── scaffold.ts                   First-run workspace template creation + onboarding
 ```
 
-### Fail-Safe Design
+### Design Principles
 
-- **Shell tools fail-closed**: If the gate system itself errors, shell commands are blocked (safety first)
-- **Non-shell tools fail-open**: Other tools are allowed through on gate errors (availability)
-- **Invalid regex patterns**: Logged and skipped, not crash the whole gate system
-- **Database errors**: Plugin logs the error and disables itself rather than crashing the agent
+- **Shell tools fail-closed:** If the gate system errors on a shell command, it's blocked (safety first).
+- **Non-shell tools fail-open:** Gate errors on read/write tools allow through (availability over safety for non-destructive ops).
+- **Portable:** No hardcoded user paths. Uses `$HOME` resolution. Works on any machine.
+- **Zero config:** Every setting has a sensible default. Install → restart → working.
+- **Persistent audit:** SQLite stores gate blocks, warnings, and session history across restarts.
+- **In-memory speed:** Session state (read files, write counts, gate flags) is in-memory Maps for zero-latency gate checks. SQLite is for persistence and cross-session context.
 
-## Dashboard
-
-The plugin registers a `/systematic` slash command that shows plugin status:
-
-```
-/systematic
-```
-
-Shows: gate mode, feature toggles, 24h/7d audit statistics (completed sessions, blocked calls, warnings, errors).
-
-> **Note:** Command availability depends on your OpenClaw version and channel. If the command isn't available, check plugin status via the `quality_checklist(action: "status")` tool instead.
+---
 
 ## Development
 
 ```bash
-# Install dependencies
 npm install
 
-# Type check (no build step — OpenClaw runs TypeScript directly)
+# Type check (no build step — OpenClaw loads TypeScript directly)
 npx tsc --noEmit
 
-# The plugin uses OpenClaw's plugin SDK types
-# See: https://docs.openclaw.ai/plugins
+# Verify no hardcoded paths
+grep -r '/Users/' src/
+
+# Test after changes
+openclaw gateway restart
 ```
+
+---
 
 ## License
 
