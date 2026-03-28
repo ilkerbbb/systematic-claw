@@ -186,7 +186,7 @@ const systematicPlugin = {
       ? api.pluginConfig as Record<string, unknown>
       : undefined;
     const resolved = resolveConfig(rawConfig, join(
-      process.env.HOME || "/tmp",
+      process.env.HOME || process.env.USERPROFILE || "/tmp",
       ".openclaw",
     ));
 
