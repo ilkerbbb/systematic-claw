@@ -208,6 +208,21 @@ export function handleAfterToolCall(deps: {
         if (isSkillFile(filePath)) {
           deps.store.recordSkillAccess(sessionKey, filePath);
         }
+
+        // Gate 9: Detect SSOT_REGISTRY.md read
+        if (/SSOT_REGISTRY\.md$/i.test(filePath)) {
+          deps.store.recordSsotRegistryRead(sessionKey);
+        }
+      }
+
+      // Gate 10: Track memory_search calls
+      if (event.toolName === "memory_search" && !event.error) {
+        deps.store.recordMemorySearch(sessionKey);
+      }
+
+      // Gate 10: Also track lcm_grep / lcm_expand_query as memory recall
+      if ((event.toolName === "lcm_grep" || event.toolName === "lcm_expand_query" || event.toolName === "lcm_expand") && !event.error) {
+        deps.store.recordMemorySearch(sessionKey);
       }
 
       // Track operation type for repetitive pattern detection

@@ -489,6 +489,259 @@ export function handleBeforeToolCall(deps: {
         }
       }
 
+      // ── GATE 9: SSoT Propagation Enforcement ──────
+      // Two-layer enforcement:
+      // 9a: plan_mode create → SSOT_REGISTRY.md must have been read
+      // 9b: plan_mode verify/complete → related files from RELATED_FILE_RULES must be updated
+      // 9b is already handled by Gate 3 (verify_before_complete) + prompt warnings.
+      // Gate 9a adds the SSoT awareness requirement.
+
+      if (event.toolName === "plan_mode") {
+        const action = event.params.action as string | undefined;
+
+        if (action === "create") {
+          deps.store.ensureSession(sessionKey);
+          const snapshot = deps.store.getSnapshot(sessionKey);
+          const hasModifications = snapshot && snapshot.modifiedFiles.length > 0;
+
+          // Only enforce SSOT read when there are already modifications (mid-session plans)
+          // or when the plan involves file changes (detected by step count > 3)
+          const steps = event.params.steps as string[] | undefined;
+          const isComplexPlan = steps && steps.length >= 4;
+
+          if ((hasModifications || isComplexPlan) && !deps.store.hasSsotRegistryRead(sessionKey)) {
+            const message =
+              `SSoT haritası okunmadan plan oluşturulamaz. ` +
+              `SYSTEM/SSOT_REGISTRY.md'yi oku → hangi dosyaların etkileneceğini belirle → sonra plan oluştur. ` +
+              `Demir Kural #2: "Değişiklik → Önce Etki Listesi"`;
+
+            deps.auditLog.record({
+              sessionKey,
+              agentId: deps.agentId,
+              eventType: deps.gateMode === "block" ? "gate_blocked" : "gate_warned",
+              severity: "high",
+              message,
+              details: {
+                gate: "ssot_propagation",
+                tool: event.toolName,
+                action,
+                stepCount: steps?.length ?? 0,
+                mode: deps.gateMode,
+              },
+            });
+
+            if (deps.gateMode === "block") {
+              deps.store.recordGateBlock(sessionKey, "ssot_propagation");
+              return blockAndMark(`⚠️ ${message}`);
+            }
+            deps.store.recordGateWarn(sessionKey, "ssot_propagation");
+          } else {
+            deps.store.recordGatePass(sessionKey, "ssot_propagation");
+          }
+        }
+      }
+
+      // ── GATE 10: memory_search before agent dispatch ──
+      // When sending tasks to agent sessions (sessions_send with agent:* sessionKey),
+      // memory_search (or lcm_grep/lcm_expand_query) must have been called first.
+      // This prevents dispatching tasks without checking prior decisions/context.
+
+      if (event.toolName === "sessions_send") {
+        const targetSession = (event.params.sessionKey ?? event.params.session_key ?? "") as string;
+        const isAgentDispatch = /^agent:[^:]+:main$/.test(targetSession);
+
+        if (isAgentDispatch && !deps.store.hasMemorySearch(sessionKey)) {
+          const message =
+            `Agent dispatch'ten önce bağlam kontrolü zorunlu. ` +
+            `"${targetSession}" session'ına görev göndermeden önce memory_search, lcm_grep veya lcm_expand_query çağır. ` +
+            `Bu, geçmiş kararların ve bağlamın kontrol edilmesini sağlar (REG-026, REG-041).`;
+
+          deps.auditLog.record({
+            sessionKey,
+            agentId: deps.agentId,
+            eventType: deps.gateMode === "block" ? "gate_blocked" : "gate_warned",
+            severity: "high",
+            message,
+            details: {
+              gate: "memory_before_dispatch",
+              tool: event.toolName,
+              targetSession,
+              mode: deps.gateMode,
+            },
+          });
+
+          if (deps.gateMode === "block") {
+            deps.store.recordGateBlock(sessionKey, "memory_before_dispatch");
+            return blockAndMark(`⚠️ ${message}`);
+          }
+          deps.store.recordGateWarn(sessionKey, "memory_before_dispatch");
+        } else if (isAgentDispatch) {
+          deps.store.recordGatePass(sessionKey, "memory_before_dispatch");
+        }
+      }
+
+      // ── GATE 11: Skill SKILL.md + skill-creator read before skill write ──
+      // When writing to /skills/X/ directory, two conditions must be met:
+      // 1. skills/X/SKILL.md must have been read (understand the skill's rules)
+      // 2. skills/skill-creator/SKILL.md must have been read (skill writing procedure)
+      // Exception: If SKILL.md doesn't exist yet (new skill creation), only skill-creator is required.
+
+      if (isFileWriteTool(event.toolName)) {
+        const filePath = extractFilePath(event.params);
+        if (filePath) {
+          const skillDirMatch = filePath.match(/\/skills\/([^/]+)\//i);
+          if (skillDirMatch) {
+            const skillName = skillDirMatch[1];
+            const missingReads: string[] = [];
+
+            // Check 1: skill-creator/SKILL.md (always required for any skill write)
+            if (skillName !== "skill-creator") {
+              const skillCreatorPath = "skills/skill-creator/SKILL.md";
+              const hasCreatorRead = deps.store.hasReadFile(sessionKey, skillCreatorPath) ||
+                deps.store.hasReadFile(sessionKey, `~/.openclaw/workspace/${skillCreatorPath}`) ||
+                deps.store.hasReadFile(sessionKey, `/Users/ilkerbasaran/.openclaw/workspace/${skillCreatorPath}`);
+              if (!hasCreatorRead) {
+                missingReads.push("skills/skill-creator/SKILL.md (skill yazma prosedürü)");
+              }
+            }
+
+            // Check 2: The skill's own SKILL.md (required unless it's a new skill being created)
+            const skillMdPath = `skills/${skillName}/SKILL.md`;
+            const hasSkillRead = deps.store.hasReadFile(sessionKey, skillMdPath) ||
+              deps.store.hasReadFile(sessionKey, `~/.openclaw/workspace/${skillMdPath}`) ||
+              deps.store.hasReadFile(sessionKey, `/Users/ilkerbasaran/.openclaw/workspace/${skillMdPath}`);
+
+            // Only require skill's own SKILL.md if it's not the SKILL.md itself being written
+            const isWritingSkillMd = /SKILL\.md$/i.test(filePath);
+            if (!hasSkillRead && !isWritingSkillMd) {
+              missingReads.push(`skills/${skillName}/SKILL.md (skill kuralları)`);
+            }
+
+            if (missingReads.length > 0) {
+              const message =
+                `Skill dosyaları okunmadan skill dizinine yazılamaz. ` +
+                `Eksik: ${missingReads.join(" + ")}. ` +
+                `AGENTS.md kuralı: "Skill oluşturan/düzenleyen herkes → ÖNCE skill-creator/SKILL.md okur."`;
+
+              deps.auditLog.record({
+                sessionKey,
+                agentId: deps.agentId,
+                eventType: deps.gateMode === "block" ? "gate_blocked" : "gate_warned",
+                severity: "medium",
+                message,
+                details: {
+                  gate: "skill_read_before_write",
+                  tool: event.toolName,
+                  file: filePath,
+                  skillName,
+                  missingReads,
+                  mode: deps.gateMode,
+                },
+              });
+
+              if (deps.gateMode === "block") {
+                deps.store.recordGateBlock(sessionKey, "skill_read_before_write");
+                return blockAndMark(`⚠️ ${message}`);
+              }
+              deps.store.recordGateWarn(sessionKey, "skill_read_before_write");
+            } else {
+              deps.store.recordGatePass(sessionKey, "skill_read_before_write");
+            }
+          }
+        }
+      }
+
+      // ── GATE 12: sessions_spawn thinking enforcement ──
+      // AGENTS.md: "Her sessions_spawn'da thinking parametresi ZORUNLU."
+      // Block sessions_spawn calls that don't include a thinking parameter.
+
+      if (event.toolName === "sessions_spawn") {
+        const thinking = event.params.thinking as string | undefined;
+        if (!thinking || thinking.trim() === "") {
+          const message =
+            `sessions_spawn'da thinking parametresi zorunlu. ` +
+            `Spawn çağrısına thinking: "low" | "medium" | "high" ekle. ` +
+            `AGENTS.md kuralı: "Her sessions_spawn'da thinking parametresi ZORUNLU."`;
+
+          deps.auditLog.record({
+            sessionKey,
+            agentId: deps.agentId,
+            eventType: deps.gateMode === "block" ? "gate_blocked" : "gate_warned",
+            severity: "medium",
+            message,
+            details: {
+              gate: "spawn_thinking",
+              tool: event.toolName,
+              mode: deps.gateMode,
+            },
+          });
+
+          if (deps.gateMode === "block") {
+            deps.store.recordGateBlock(sessionKey, "spawn_thinking");
+            return blockAndMark(`⚠️ ${message}`);
+          }
+          deps.store.recordGateWarn(sessionKey, "spawn_thinking");
+        } else {
+          deps.store.recordGatePass(sessionKey, "spawn_thinking");
+        }
+      }
+
+      // ── GATE 13: Workspace root file hygiene ──────────
+      // AGENTS.md: "Root'a MD dışı dosya yazılmaz. Geçici → temp/, script → scripts/, görsel → temp/."
+      // Block writing non-.md files directly to workspace root.
+
+      if (isFileWriteTool(event.toolName)) {
+        const filePath = extractFilePath(event.params);
+        if (filePath) {
+          // Normalize: detect workspace root writes
+          // Workspace root patterns: ~/.openclaw/workspace/ or /Users/.../workspace/
+          const workspaceRootPatterns = [
+            /^~\/\.openclaw\/workspace\/([^/]+)$/,
+            /\/\.openclaw\/workspace\/([^/]+)$/,
+          ];
+
+          for (const pattern of workspaceRootPatterns) {
+            const match = filePath.match(pattern);
+            if (match) {
+              const fileName = match[1];
+              const isMdFile = /\.md$/i.test(fileName);
+
+              if (!isMdFile) {
+                const message =
+                  `Workspace root'a sadece .md dosya yazılabilir. ` +
+                  `"${fileName}" dosyası workspace root'ta oluşturulamaz. ` +
+                  `Doğru yer: script → scripts/, geçici → temp/, görsel → temp/. ` +
+                  `AGENTS.md kuralı: "Root'a MD dışı dosya yazılmaz."`;
+
+                deps.auditLog.record({
+                  sessionKey,
+                  agentId: deps.agentId,
+                  eventType: deps.gateMode === "block" ? "gate_blocked" : "gate_warned",
+                  severity: "medium",
+                  message,
+                  details: {
+                    gate: "workspace_root_hygiene",
+                    tool: event.toolName,
+                    file: filePath,
+                    fileName,
+                    mode: deps.gateMode,
+                  },
+                });
+
+                if (deps.gateMode === "block") {
+                  deps.store.recordGateBlock(sessionKey, "workspace_root_hygiene");
+                  return blockAndMark(`⚠️ ${message}`);
+                }
+                deps.store.recordGateWarn(sessionKey, "workspace_root_hygiene");
+              } else {
+                deps.store.recordGatePass(sessionKey, "workspace_root_hygiene");
+              }
+              break; // Only check first matching pattern
+            }
+          }
+        }
+      }
+
     } catch (err) {
       // Log error to console AND attempt audit log
       const errMsg = err instanceof Error ? err.message : String(err);

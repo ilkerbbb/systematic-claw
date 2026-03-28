@@ -226,6 +226,8 @@ export class SessionStateStore {
       this._lastSearchTs,
       this._lastGitCommandTs,
       this._gateActivity,
+      this._memorySearchDone,
+      this._ssotRegistryRead,
     ];
     for (const map of maps) {
       if (map.size > limit) {
@@ -272,6 +274,30 @@ export class SessionStateStore {
       this._skillFilesAccessed.set(sessionKey, new Set());
     }
     this._skillFilesAccessed.get(sessionKey)!.add(skillPath);
+  }
+
+  // ── Gate 10: memory_search tracking ─────
+
+  /** Record that memory_search was called in this session. */
+  recordMemorySearch(sessionKey: string): void {
+    this._memorySearchDone.set(sessionKey, true);
+  }
+
+  /** Check if memory_search was called in this session. */
+  hasMemorySearch(sessionKey: string): boolean {
+    return this._memorySearchDone.get(sessionKey) === true;
+  }
+
+  // ── Gate 9: SSOT_REGISTRY.md read tracking ─────
+
+  /** Record that SSOT_REGISTRY.md was read in this session. */
+  recordSsotRegistryRead(sessionKey: string): void {
+    this._ssotRegistryRead.set(sessionKey, true);
+  }
+
+  /** Check if SSOT_REGISTRY.md was read in this session. */
+  hasSsotRegistryRead(sessionKey: string): boolean {
+    return this._ssotRegistryRead.get(sessionKey) === true;
   }
 
   /** Track operation type for pattern detection. */
@@ -461,6 +487,16 @@ export class SessionStateStore {
   // Also tracks write-count-since-verification for TDD Lite nudges.
   private _writesSinceVerification = new Map<string, number>();
 
+  // ── Gate 10: memory_search tracking (in-memory) ─────
+  // Tracks whether agent called memory_search in this session.
+  // Used by Gate 10 to enforce memory_search before sessions_send to agent sessions.
+  private _memorySearchDone = new Map<string, boolean>();
+
+  // ── Gate 9: SSOT_REGISTRY.md read tracking (in-memory) ─────
+  // Tracks whether agent read SSOT_REGISTRY.md in this session.
+  // Used by Gate 9 to enforce SSoT awareness before plan completion.
+  private _ssotRegistryRead = new Map<string, boolean>();
+
   recordVerification(sessionKey: string): void {
     this._verifications.set(sessionKey, Date.now());
     this._writesSinceVerification.set(sessionKey, 0); // Reset counter on verification
@@ -626,6 +662,8 @@ export class SessionStateStore {
     this._lastSearchTs.delete(sessionKey);
     this._lastGitCommandTs.delete(sessionKey);
     this._gateActivity.delete(sessionKey);
+    this._memorySearchDone.delete(sessionKey);
+    this._ssotRegistryRead.delete(sessionKey);
     // Note: _brainstormCache is keyed by planId, not sessionKey — cleared when plan completes
 
     // Prune all in-memory Maps to prevent unbounded growth across many sessions

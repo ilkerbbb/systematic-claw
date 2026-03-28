@@ -43,6 +43,8 @@ const DEFAULT_DANGEROUS_COMMANDS: string[] = [
   "\\bsendmail\\b",
   // Destructive filesystem operations
   "\\brm\\s+(-[rRf]+\\s+)*(/|~|\\.\\./)",  // rm -rf on root, home, or parent
+  "\\brm\\s+(-[rRf]+\\s+)*.*\\.openclaw/workspace",  // rm on workspace files — use trash instead
+  "\\brm\\s+(-[rRf]+\\s+)*.*workspace-",  // rm on agent workspace files
   "\\bmkfs\\b",
   "\\bdd\\s+of=/dev/",
   // Git destructive operations

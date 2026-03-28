@@ -99,6 +99,32 @@ export const RELATED_FILE_RULES: RelatedFileRule[] = [
     requires: ["OPERATIONS.md"],
     description: "Cron değiştiğinde OPERATIONS.md güncellenmeli",
   },
+  // Gate 9: Expanded SSoT propagation rules
+  {
+    pattern: /\/skills\/[^/]+\/SKILL\.md$/i,
+    requires: ["TOOLS.md"],
+    description: "Skill SKILL.md değiştiğinde TOOLS.md güncellenmeli",
+  },
+  {
+    pattern: /SOUL\.md$/i,
+    requires: ["MEMORY.md"],
+    description: "SOUL.md değiştiğinde MEMORY.md'ye karar kaydı yazılmalı",
+  },
+  {
+    pattern: /AGENTS\.md$/i,
+    requires: ["MEMORY.md"],
+    description: "AGENTS.md değiştiğinde MEMORY.md'ye karar kaydı yazılmalı",
+  },
+  {
+    pattern: /CRON_INVENTORY\.md$/i,
+    requires: ["OPERATIONS.md"],
+    description: "CRON_INVENTORY değiştiğinde OPERATIONS.md kontrol edilmeli",
+  },
+  {
+    pattern: /MEMORY\.md$/i,
+    requires: ["STATE.md"],
+    description: "MEMORY.md değiştiğinde STATE.md güncellenmeli",
+  },
 ];
 
 // ─── Propagation Rules (Phase 4B) ───────────────────────────

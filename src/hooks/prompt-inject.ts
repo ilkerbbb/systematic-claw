@@ -132,6 +132,10 @@ SKILL FARKINDALIK:
 - Bir iş tipine başlarken workspace'teki mevcut skill'leri kontrol et
 - Tekrarlayan iş akışları tespit edersen → kullanıcıya skill oluşturulmasını öner
 - Skill önerisinde somut ol: hangi adımlar otomatikleşir, hangi tutarlılık sağlanır
+
+DEMİR KURALLAR (enforce edilemiyor ama HATIRLA):
+- #1 SAYISAL İDDİA → KAYNAĞA BAK: Skor, tarih, boyut, token, fiyat yazacaksan → dosyayı aç, oku, sonra yaz. "Hatırlıyorum" yetmez.
+- #3 GÖNDERMEDEN → DUR, DOĞRULA: "Bu cevap doğru mu?" sorusunu sor. Tablo varsa her satırı kontrol et.
 `;
 
 // ─── Build Context Function ──────────────────────────────────
