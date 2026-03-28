@@ -193,6 +193,38 @@ export function handleBeforeToolCall(deps: {
           } else {
             deps.store.recordGatePass(sessionKey, "verify_before_complete");
           }
+
+          // Gate 3b: Quality review before plan completion
+          // If files were modified and quality_checklist hasn't been called, block.
+          if (hasModifications && !deps.store.hasQualityReview(sessionKey)) {
+            const message =
+              `Quality review olmadan plan tamamlanamaz. ` +
+              `${snapshot!.modifiedFiles.length} dosya değiştirildi ama quality_checklist çağrılmadı. ` +
+              `Önce quality_checklist(action: "review") çalıştır, sonra tamamla.`;
+
+            deps.auditLog.record({
+              sessionKey,
+              agentId: deps.agentId,
+              eventType: deps.gateMode === "block" ? "gate_blocked" : "gate_warned",
+              severity: "high",
+              message,
+              details: {
+                gate: "quality_before_complete",
+                tool: event.toolName,
+                action,
+                modifiedFiles: snapshot!.modifiedFiles,
+                mode: deps.gateMode,
+              },
+            });
+
+            if (deps.gateMode === "block") {
+              deps.store.recordGateBlock(sessionKey, "quality_before_complete");
+              return blockAndMark(`🛑 ${message}`);
+            }
+            deps.store.recordGateWarn(sessionKey, "quality_before_complete");
+          } else {
+            deps.store.recordGatePass(sessionKey, "quality_before_complete");
+          }
         }
       }
       // ── GATE 4: Doom loop detection ─────────────────
@@ -431,11 +463,10 @@ export function handleBeforeToolCall(deps: {
           const fileCount = modifiedFiles.length;
           const dirCount = dirSet.size;
 
-          if (fileCount >= 6 && dirCount >= 3) {
+          if (fileCount >= 2) {
             const message =
-              `🛑 KALİTE İNCELEMESİ ZORUNLU: ${fileCount} dosya ${dirCount} dizinde değiştirildi — karmaşıklık eşiği aşıldı. ` +
-              `Daha fazla dosya yazmadan önce quality_checklist(action: "review") çalıştır. ` +
-              `Bu, cross-cutting hataları erken yakalamak ve tutarlılığı sağlamak için gerekli.`;
+              `🛑 KALİTE İNCELEMESİ ZORUNLU: ${fileCount} dosya değiştirildi — quality review olmadan daha fazla dosya yazılamaz. ` +
+              `quality_checklist(action: "review") çağır, sonra devam et.`;
 
             deps.auditLog.record({
               sessionKey,

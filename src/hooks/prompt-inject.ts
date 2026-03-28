@@ -551,26 +551,22 @@ function buildPeriodicWarnings(store: SessionStateStore, sessionKey: string): st
       complexityScore += 1;
     }
 
-    // Emit warning based on complexity score
+    // Emit warning aligned with hard block thresholds
+    // Hard block: ≥2 files → new writes blocked until quality_checklist
+    // Hard block: plan verify/complete → blocked if files modified without quality_checklist
     const reasonText = complexityReasons.length > 0 ? ` (${complexityReasons.join(", ")})` : "";
 
-    if (complexityScore >= 5) {
+    if (fileCount >= 2) {
       warnings.push(
-        `- 🛑 **QUALITY REVIEW ZORUNLU** — Yüksek karmaşıklık tespit edildi${reasonText}. ` +
-        `quality_checklist henüz çağrılmadı. ` +
-        `İşi tamamlamadan ÖNCE \`quality_checklist(action: "review")\` çağır. ` +
-        `Doğrulama, edge case, regresyon riski ve gap analizi yanıtla.`
+        `- 🛑 **QUALITY REVIEW ZORUNLU** — ${fileCount} dosya değiştirildi${reasonText}. ` +
+        `Yeni dosya yazımı ve plan tamamlama **ENGELLENİYOR**. ` +
+        `\`quality_checklist(action: "review")\` çağır: doğrulama, edge case, regresyon riski ve gap analizi yanıtla.`
       );
-    } else if (complexityScore >= 3) {
+    } else if (fileCount === 1) {
       warnings.push(
-        `- ⚠️ **Quality review hatırlatma** — Orta karmaşıklık${reasonText}. ` +
-        `İşi bitirmeden önce \`quality_checklist(action: "review")\` çağırmayı unutma.`
-      );
-    } else if (callCount >= 10) {
-      // Fallback: even low-complexity sessions with 10+ calls get a gentle reminder
-      warnings.push(
-        "- ⚠️ **Quality review hatırlatma** — " + fileCount + " dosya değiştirildi. " +
-        "İşi bitirmeden önce `quality_checklist(action: \"review\")` çağırmayı unutma."
+        `- ⚠️ **Quality review önerilir** — 1 dosya değiştirildi. ` +
+        `İşi bitirmeden önce \`quality_checklist(action: "review")\` çağırmayı unutma. ` +
+        `2. dosya yazımında engelleme başlayacak.`
       );
     }
   }
