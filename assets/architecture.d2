@@ -1,0 +1,179 @@
+direction: down
+
+title: |md
+  # systematic-claw
+  OpenClaw Plugin Architecture
+|
+
+# Styling
+classes: {
+  hook: {
+    style: {
+      border-radius: 8
+      font-size: 14
+      bold: true
+    }
+  }
+  gate: {
+    style: {
+      border-radius: 4
+      font-size: 12
+    }
+  }
+  pass: {
+    style: {
+      border-radius: 4
+      font-color: "#2d6a4f"
+      stroke: "#2d6a4f"
+      fill: "#d8f3dc"
+      font-size: 12
+    }
+  }
+  block: {
+    style: {
+      border-radius: 4
+      font-color: "#9d0208"
+      stroke: "#9d0208"
+      fill: "#ffd7d7"
+      font-size: 12
+    }
+  }
+  track: {
+    style: {
+      border-radius: 4
+      font-color: "#1d3557"
+      stroke: "#457b9d"
+      fill: "#a8dadc"
+      font-size: 12
+    }
+  }
+}
+
+# Layer 1
+L1: "Layer 1 · before_prompt_build" {
+  style: {
+    fill: "#f8f9fa"
+    stroke: "#adb5bd"
+    border-radius: 12
+    font-size: 13
+    bold: true
+  }
+
+  detect: "Workflow Detection\n~189 keywords · TR/EN" {
+    style: {
+      fill: "#e9ecef"
+      border-radius: 8
+      font-size: 12
+    }
+  }
+
+  inject: "Context Injection\nIron Rules · Gate Status · Guides" {
+    style: {
+      fill: "#e9ecef"
+      border-radius: 8
+      font-size: 12
+    }
+  }
+
+  detect -> inject: classify
+}
+
+# Layer 2
+L2: "Layer 2 · before_tool_call" {
+  style: {
+    fill: "#f8f9fa"
+    stroke: "#adb5bd"
+    border-radius: 12
+    font-size: 13
+    bold: true
+  }
+
+  gates: "15 Hard Gates" {
+    style: {
+      fill: "#e9ecef"
+      border-radius: 8
+      font-size: 13
+      bold: true
+    }
+
+    g_rw: "1 Read→Edit\n2 Plan→Create\n3 Verify→Complete" {
+      style.fill: "#fff3cd"
+      style.border-radius: 6
+      style.font-size: 11
+    }
+    g_safety: "4 Doom Loop\n5 Dangerous Cmds\n6 File Size" {
+      style.fill: "#fff3cd"
+      style.border-radius: 6
+      style.font-size: 11
+    }
+    g_quality: "7 Verify Cadence\n8 Complexity Review\n3b/3c Quality+Related" {
+      style.fill: "#fff3cd"
+      style.border-radius: 6
+      style.font-size: 11
+    }
+    g_ssot: "9/9c SSoT Propagation\n10 Memory→Dispatch\n11 Skill Read\n12 Spawn Thinking\n13 Root Hygiene" {
+      style.fill: "#fff3cd"
+      style.border-radius: 6
+      style.font-size: 11
+    }
+  }
+
+  pass: "✅ Pass → Tool Runs" {
+    class: pass
+  }
+  block_result: "🛑 Block → Error + Fix Guide" {
+    class: block
+  }
+
+  gates -> pass: all gates pass
+  gates -> block_result: any gate fails
+}
+
+# Layer 3
+L3: "Layer 3 · after_tool_call" {
+  style: {
+    fill: "#f8f9fa"
+    stroke: "#adb5bd"
+    border-radius: 12
+    font-size: 13
+    bold: true
+  }
+
+  tracking: "Session State Tracking" {
+    style: {
+      fill: "#e9ecef"
+      border-radius: 8
+      font-size: 12
+    }
+
+    files: "Files Read/Written" { class: track }
+    searches: "Memory Searches" { class: track }
+    flags: "SSoT / Skill Flags" { class: track }
+    counters: "Write & Verify Counts" { class: track }
+  }
+}
+
+# Layer 4
+L4: "Layer 4 · session_end" {
+  style: {
+    fill: "#f8f9fa"
+    stroke: "#adb5bd"
+    border-radius: 12
+    font-size: 13
+    bold: true
+  }
+
+  audit: "Completion Audit\nSQLite Log · Pending Reviews · Warnings" {
+    style: {
+      fill: "#e9ecef"
+      border-radius: 8
+      font-size: 12
+    }
+  }
+}
+
+# Flow
+L1 -> L2: "every tool call"
+L2.pass -> L3: "track result"
+L3 -> L2: "feeds next gate check" {style.stroke-dash: 3}
+L3 -> L4: "session ends"
