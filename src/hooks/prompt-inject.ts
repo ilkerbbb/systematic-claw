@@ -30,20 +30,20 @@ export type WorkflowType = "debugging" | "creating" | "analyzing" | "fixing" | "
 
 const WORKFLOW_SIGNALS: Partial<Record<WorkflowType, RegExp[]>> = {
   debugging: [
-    /hata|error|bug|crash|fail|broken|çalışmıyor|bozuk|sorun|problem|issue|exception|trace/i,
-    /debug|diagnose|investigate|neden|why|root.?cause|kök.?neden/i,
+    /hata|error|bug|crash|fail|broken|çalışmıyor|bozuk|sorun|problem|issue|exception|trace|patla|çök|takıl|don[du]|arıza|niye|sebep|kop[tu]|timeout|zaman.?aşım|uyarı|warning|stack.?trace|undefined is not|cannot read|ENOENT|EACCES|panic|segfault|traceback/i,
+    /debug|diagnose|investigate|neden|why|root.?cause|kök.?neden|not.?working|stuck|\bhang\b|\bhangs\b|threw|unexpected|stderr|yanıt.?ver.?m|dönm[üe]yor|refused|denied|\breject\b/i,
   ],
   creating: [
-    /oluştur|create|build|yaz|write|implement|geliştir|develop|ekle|add|kur|setup|scaffold/i,
-    /yeni|new|feature|özellik|modül|module|component|plugin/i,
+    /oluştur|create|build|yaz|write|implement|geliştir|develop|ekle|add|kur|setup|scaffold|hazırla|tasarla|üret|başlat|entegre|deploy|migrate|generate|init|boilerplate|taslak|draft|prototip/i,
+    /yeni|new|feature|özellik|modül|module|component|plugin|template|wireframe|inşa|make\s|design|bootstrap|prototype|compose|wire.?up|spin.?up/i,
   ],
   analyzing: [
-    /analiz|analyze|incele|examine|audit|review|değerlendir|evaluate|karşılaştır|compare/i,
-    /rapor|report|summary|özet|istatistik|stats|metrik|metric/i,
+    /analiz|analyze|incele|examine|audit|review|değerlendir|evaluate|karşılaştır|compare|kontrol.?et|araştır|listele|ölç|test.?et|doğrula|tara|denetle|izle|takip|benchmark|profil|check|inspect|assess|scan|measure|monitor|survey|breakdown|overview/i,
+    /rapor|report|summary|özet|istatistik|stats|metrik|metric|durum|status|göster|show|kaç.?tane|how.?many|count/i,
   ],
   fixing: [
-    /düzelt|fix|repair|patch|güncelle|update|değiştir|modify|refactor|iyileştir|improve/i,
-    /migration|upgrade|optimize|temizle|clean/i,
+    /düzelt|fix|repair|patch|güncelle|update|değiştir|modify|refactor|iyileştir|improve|kaldır|sil|taşı|geri.?al|revize|ayarla|yapılandır|onar|yenile|sıfırla|resetle|azalt|birleştir|remove|delete|rename|move|revert|rollback|tweak|adjust|configure|restructure|merge|resolve|trim|reduce|simplify|swap/i,
+    /migration|upgrade|optimize|temizle|clean|reorganize|deprecate|kısalt/i,
   ],
 };
 
