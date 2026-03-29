@@ -2,9 +2,13 @@
 
 **Structural discipline plugin for [OpenClaw](https://openclaw.ai) agents.**
 
-Agents are powerful but undisciplined. They skip verification, forget to update docs, edit files they haven't read, and declare "done" prematurely. This plugin enforces discipline through hard gates, workflow tools, and audit logging — without requiring the agent to *want* to be disciplined.
+AI agents are powerful but undisciplined. They skip verification, forget to update documentation, edit files they haven't read, and declare "done" prematurely. systematic-claw intercepts every tool call through OpenClaw's hook system and enforces structural discipline; 15 hard gates that block bad patterns before they happen, 4 workflow tools that guide agents through proper processes, and persistent audit logging that tracks everything. The agent doesn't need to *want* to be disciplined; the plugin makes discipline the path of least resistance.
 
 > 7,200 lines of TypeScript. 15 hard gates. 4 workflow tools. Zero config required.
+
+![Architecture](assets/architecture.png)
+
+*Four-layer hook pipeline: workflow detection → hard gate enforcement → file/search tracking → completion audit. See [CHANGELOG.md](CHANGELOG.md) for version history.*
 
 ## Quick Start
 
@@ -148,12 +152,14 @@ Controlled by `gateVerbosity` config:
 
 The plugin analyzes each prompt to detect the type of work and inject relevant guidance:
 
-| Workflow | Trigger Keywords | Guidance |
-|----------|-----------------|----------|
-| 🔍 Debugging | "error", "bug", "broken" | Use `debug_tracker`, root cause first |
-| 🏗️ Creating | "create", "build", "new" | Plan first, then execute step by step |
-| 📊 Analyzing | "analyze", "review", "report" | Gather data, synthesize, question assumptions |
-| 🔧 Fixing | "fix", "update", "refactor" | Read before edit, update related files |
+| Workflow | Example Keywords (EN) | Example Keywords (TR) | Guidance |
+|----------|----------------------|----------------------|----------|
+| 🔍 Debugging | error, bug, crash, stuck, not working | hata, bozuk, patladı, takıldı, arıza | Use `debug_tracker`, root cause first |
+| 🏗️ Creating | create, build, new, deploy, generate | oluştur, hazırla, tasarla, başlat, taslak | Plan first, then execute step by step |
+| 📊 Analyzing | analyze, review, check, monitor, status | analiz, incele, kontrol et, listele, durum | Gather data, synthesize, question assumptions |
+| 🔧 Fixing | fix, update, remove, rollback, configure | düzelt, güncelle, kaldır, sıfırla, ayarla | Read before edit, update related files |
+
+> ~189 keywords total across both languages. See `src/hooks/prompt-inject.ts` for the full regex set.
 
 ---
 
