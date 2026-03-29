@@ -1,179 +1,203 @@
-direction: down
+direction: right
 
 title: |md
-  # systematic-claw
-  OpenClaw Plugin Architecture
+  # systematic-claw — OpenClaw Plugin Architecture
 |
 
-# Styling
-classes: {
-  hook: {
-    style: {
-      border-radius: 8
-      font-size: 14
-      bold: true
-    }
-  }
-  gate: {
-    style: {
-      border-radius: 4
-      font-size: 12
-    }
-  }
-  pass: {
-    style: {
-      border-radius: 4
-      font-color: "#2d6a4f"
-      stroke: "#2d6a4f"
-      fill: "#d8f3dc"
-      font-size: 12
-    }
-  }
-  block: {
-    style: {
-      border-radius: 4
-      font-color: "#9d0208"
-      stroke: "#9d0208"
-      fill: "#ffd7d7"
-      font-size: 12
-    }
-  }
-  track: {
-    style: {
-      border-radius: 4
-      font-color: "#1d3557"
-      stroke: "#457b9d"
-      fill: "#a8dadc"
-      font-size: 12
-    }
-  }
-}
-
 # Layer 1
-L1: "Layer 1 · before_prompt_build" {
+L1: "Layer 1\nbefore_prompt_build" {
   style: {
-    fill: "#f8f9fa"
-    stroke: "#adb5bd"
+    fill: "#1a1a2e"
+    stroke: "#e0e0e0"
     border-radius: 12
-    font-size: 13
+    font-size: 15
+    font-color: "#ffffff"
     bold: true
   }
 
   detect: "Workflow Detection\n~189 keywords · TR/EN" {
     style: {
-      fill: "#e9ecef"
+      fill: "#16213e"
+      stroke: "#e0e0e0"
       border-radius: 8
-      font-size: 12
+      font-size: 13
+      font-color: "#ffffff"
     }
   }
 
-  inject: "Context Injection\nIron Rules · Gate Status · Guides" {
+  inject: "Context Injection\nIron Rules · Gate Status" {
     style: {
-      fill: "#e9ecef"
+      fill: "#16213e"
+      stroke: "#e0e0e0"
       border-radius: 8
-      font-size: 12
+      font-size: 13
+      font-color: "#ffffff"
     }
   }
 
-  detect -> inject: classify
+  detect -> inject: classify {
+    style.stroke: "#a0a0a0"
+    style.font-color: "#d0d0d0"
+  }
 }
 
 # Layer 2
-L2: "Layer 2 · before_tool_call" {
+L2: "Layer 2\nbefore_tool_call" {
   style: {
-    fill: "#f8f9fa"
-    stroke: "#adb5bd"
+    fill: "#1a1a2e"
+    stroke: "#e0e0e0"
     border-radius: 12
-    font-size: 13
+    font-size: 15
+    font-color: "#ffffff"
     bold: true
   }
 
   gates: "15 Hard Gates" {
     style: {
-      fill: "#e9ecef"
+      fill: "#0f3460"
+      stroke: "#e0e0e0"
       border-radius: 8
-      font-size: 13
+      font-size: 14
+      font-color: "#ffffff"
       bold: true
     }
 
-    g_rw: "1 Read→Edit\n2 Plan→Create\n3 Verify→Complete" {
-      style.fill: "#fff3cd"
+    g1: "Safety\n─────────\n1 Read→Edit\n2 Plan→Create\n3 Verify→Complete\n4 Doom Loop\n5 Dangerous Cmds\n6 File Size" {
+      style.fill: "#1a1a2e"
+      style.stroke: "#a0a0a0"
       style.border-radius: 6
-      style.font-size: 11
+      style.font-size: 12
+      style.font-color: "#e0e0e0"
     }
-    g_safety: "4 Doom Loop\n5 Dangerous Cmds\n6 File Size" {
-      style.fill: "#fff3cd"
+    g2: "Quality\n─────────\n7 Verify Cadence\n8 Complexity Review\n3b Quality Gate\n3c Related Files" {
+      style.fill: "#1a1a2e"
+      style.stroke: "#a0a0a0"
       style.border-radius: 6
-      style.font-size: 11
+      style.font-size: 12
+      style.font-color: "#e0e0e0"
     }
-    g_quality: "7 Verify Cadence\n8 Complexity Review\n3b/3c Quality+Related" {
-      style.fill: "#fff3cd"
+    g3: "SSoT\n─────────\n9/9c Propagation\n10 Memory→Dispatch\n11 Skill Read\n12 Spawn Thinking\n13 Root Hygiene" {
+      style.fill: "#1a1a2e"
+      style.stroke: "#a0a0a0"
       style.border-radius: 6
-      style.font-size: 11
-    }
-    g_ssot: "9/9c SSoT Propagation\n10 Memory→Dispatch\n11 Skill Read\n12 Spawn Thinking\n13 Root Hygiene" {
-      style.fill: "#fff3cd"
-      style.border-radius: 6
-      style.font-size: 11
+      style.font-size: 12
+      style.font-color: "#e0e0e0"
     }
   }
 
-  pass: "✅ Pass → Tool Runs" {
-    class: pass
+  pass: "✅ Pass\nTool Runs" {
+    style: {
+      fill: "#1b4332"
+      stroke: "#95d5b2"
+      border-radius: 8
+      font-size: 13
+      font-color: "#d8f3dc"
+      bold: true
+    }
   }
-  block_result: "🛑 Block → Error + Fix Guide" {
-    class: block
+  block_r: "🛑 Block\nError + Fix Guide" {
+    style: {
+      fill: "#641220"
+      stroke: "#e5383b"
+      border-radius: 8
+      font-size: 13
+      font-color: "#ffd7d7"
+      bold: true
+    }
   }
 
-  gates -> pass: all gates pass
-  gates -> block_result: any gate fails
+  gates -> pass: all pass {
+    style.stroke: "#95d5b2"
+    style.font-color: "#95d5b2"
+  }
+  gates -> block_r: any fail {
+    style.stroke: "#e5383b"
+    style.font-color: "#e5383b"
+  }
 }
 
 # Layer 3
-L3: "Layer 3 · after_tool_call" {
+L3: "Layer 3\nafter_tool_call" {
   style: {
-    fill: "#f8f9fa"
-    stroke: "#adb5bd"
+    fill: "#1a1a2e"
+    stroke: "#e0e0e0"
     border-radius: 12
-    font-size: 13
+    font-size: 15
+    font-color: "#ffffff"
     bold: true
   }
 
-  tracking: "Session State Tracking" {
-    style: {
-      fill: "#e9ecef"
-      border-radius: 8
-      font-size: 12
-    }
-
-    files: "Files Read/Written" { class: track }
-    searches: "Memory Searches" { class: track }
-    flags: "SSoT / Skill Flags" { class: track }
-    counters: "Write & Verify Counts" { class: track }
+  t1: "Files Read/Written" {
+    style.fill: "#16213e"
+    style.stroke: "#a0a0a0"
+    style.font-size: 12
+    style.font-color: "#e0e0e0"
+    style.border-radius: 6
+  }
+  t2: "Memory Searches" {
+    style.fill: "#16213e"
+    style.stroke: "#a0a0a0"
+    style.font-size: 12
+    style.font-color: "#e0e0e0"
+    style.border-radius: 6
+  }
+  t3: "SSoT & Skill Flags" {
+    style.fill: "#16213e"
+    style.stroke: "#a0a0a0"
+    style.font-size: 12
+    style.font-color: "#e0e0e0"
+    style.border-radius: 6
+  }
+  t4: "Write & Verify Counts" {
+    style.fill: "#16213e"
+    style.stroke: "#a0a0a0"
+    style.font-size: 12
+    style.font-color: "#e0e0e0"
+    style.border-radius: 6
   }
 }
 
 # Layer 4
-L4: "Layer 4 · session_end" {
+L4: "Layer 4\nsession_end" {
   style: {
-    fill: "#f8f9fa"
-    stroke: "#adb5bd"
+    fill: "#1a1a2e"
+    stroke: "#e0e0e0"
     border-radius: 12
-    font-size: 13
+    font-size: 15
+    font-color: "#ffffff"
     bold: true
   }
 
-  audit: "Completion Audit\nSQLite Log · Pending Reviews · Warnings" {
+  audit: "Completion Audit\nSQLite Log · Pending Reviews" {
     style: {
-      fill: "#e9ecef"
+      fill: "#16213e"
+      stroke: "#e0e0e0"
       border-radius: 8
-      font-size: 12
+      font-size: 13
+      font-color: "#ffffff"
     }
   }
 }
 
 # Flow
-L1 -> L2: "every tool call"
-L2.pass -> L3: "track result"
-L3 -> L2: "feeds next gate check" {style.stroke-dash: 3}
-L3 -> L4: "session ends"
+L1 -> L2: "every tool call" {
+  style.stroke: "#a0a0a0"
+  style.font-color: "#d0d0d0"
+  style.font-size: 12
+}
+L2.pass -> L3: "track result" {
+  style.stroke: "#95d5b2"
+  style.font-color: "#95d5b2"
+  style.font-size: 12
+}
+L3 -> L2: "feeds next check" {
+  style.stroke: "#a0a0a0"
+  style.stroke-dash: 3
+  style.font-color: "#d0d0d0"
+  style.font-size: 11
+}
+L3 -> L4: "session ends" {
+  style.stroke: "#a0a0a0"
+  style.font-color: "#d0d0d0"
+  style.font-size: 12
+}
