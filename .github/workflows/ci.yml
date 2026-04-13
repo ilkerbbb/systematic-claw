@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  ts-check:
+    name: TypeScript Syntax Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript syntax check
+        run: npx tsc --noEmit --strict --esModuleInterop --skipLibCheck index.ts src/**/*.ts
+
+      - name: Verify package structure
+        run: |
+          test -f index.ts || (echo "MISSING: index.ts" && exit 1)
+          test -f openclaw.plugin.json || (echo "MISSING: openclaw.plugin.json" && exit 1)
+          echo "Package structure OK"
