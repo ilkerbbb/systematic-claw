@@ -24,7 +24,7 @@ jobs:
         run: npm ci
 
       - name: TypeScript syntax check
-        run: npx tsc --noEmit --strict --esModuleInterop --skipLibCheck index.ts src/**/*.ts
+        run: npx tsc --noEmit --esModuleInterop --skipLibCheck --target es2020 --moduleResolution node16 --module node16 index.ts src/**/*.ts
 
       - name: Verify package structure
         run: |

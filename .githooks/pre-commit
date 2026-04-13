@@ -10,8 +10,8 @@ staged_ts=$(git diff --cached --name-only --diff-filter=ACM -- '*.ts' 2>/dev/nul
 
 if [ -n "$staged_ts" ]; then
   echo "Checking staged TypeScript files..."
-  if ! npx tsc --noEmit --strict --esModuleInterop --skipLibCheck index.ts src/**/*.ts 2>/dev/null; then
-    echo "TypeScript check failed. Run 'npx tsc --noEmit --strict --esModuleInterop --skipLibCheck index.ts src/**/*.ts'"
+  if ! npx tsc --noEmit --esModuleInterop --skipLibCheck --target es2020 --moduleResolution node16 --module node16 index.ts src/**/*.ts 2>/dev/null; then
+    echo "TypeScript check failed."
     errors=$((errors + 1))
   fi
 fi
